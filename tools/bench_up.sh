@@ -1,7 +1,7 @@
 #!/bin/bash
 # Bring up the bench PC side of the T1S zone bus, idempotently (run it again any time):
 #   zenohd    tcp/192.168.100.51:7448   (the nodes' router; zenohd.service on 7447 is tied to the EVB's .70)
-#   zonelink  Autoware (PLEOS gateway :8780 on the Autoware PC) -> vehicle/** VSS keys, restarted if it dies
+#   zonelink  Autoware (HMI gateway :8780 on the Autoware PC) -> vehicle/** VSS keys, restarted if it dies
 #   console   http://localhost:8830
 #   tools/bench_up.sh [stop|status]
 # Logs: ~/.cache/t1s-bench/*.log
@@ -12,6 +12,8 @@ mkdir -p "$L"
 ZENOHD=/opt/zenoh/1.10.1/zenohd
 ROUTER=tcp/192.168.100.51:7448
 GATEWAY=${GATEWAY:-http://10.42.0.90:8780}
+# the vehicle-API sidecar (zonelink.py, from the simulator project); SIDECAR=<path> to point at it
+SIDECAR=${SIDECAR:-$(ls "$HOME"/*/sdv/zonelink.py 2>/dev/null | head -1)}
 
 listening() { ss -ltn | grep -q ":$1 "; }
 pidfile_alive() { [ -f "$L/$1.pid" ] && kill -0 "$(cat "$L/$1.pid")" 2>/dev/null; }
@@ -41,8 +43,10 @@ if ! listening 7448; then
 	echo $! > "$L/zenohd.pid"
 	sleep 2
 fi
-if ! pidfile_alive zonelink; then
-	nohup bash -c "while true; do python3 -u $HOME/korea-autoware-sim/sdv/zonelink.py --api $GATEWAY --router $ROUTER; echo \"restart \$(date +%T)\"; sleep 2; done" \
+if [ -z "$SIDECAR" ]; then
+	echo "zonelink: no sidecar found (set SIDECAR=<path to zonelink.py>)"
+elif ! pidfile_alive zonelink; then
+	nohup bash -c "while true; do python3 -u $SIDECAR --api $GATEWAY --router $ROUTER; echo \"restart \$(date +%T)\"; sleep 2; done" \
 		> "$L/zonelink.log" 2>&1 &
 	echo $! > "$L/zonelink.pid"
 fi

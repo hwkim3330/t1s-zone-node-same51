@@ -1,7 +1,7 @@
 /*
- * Zone lamps from the vehicle API: the ZoneLink VSS keys (`vehicle/<lower-case VSS path>`, one
- * little-endian scalar each, published by korea-autoware-sim/sdv/zonelink.py from the sim or from
- * Autoware through the PLEOS gateway) drive the lamp outputs of dts/zone-lamps-slot1.overlay.
+ * Zone lamps from the vehicle API: the VSS keys (`vehicle/<lower-case VSS path>`, one
+ * little-endian scalar each, published by the vehicle-API sidecar (zonelink.py) from the sim or from
+ * Autoware through the HMI gateway) drive the lamp outputs of dts/zone-lamps-slot1.overlay.
  *
  *   body/lights/directionindicator/left|right/issignaling  u8  -> left / right indicator
  *   body/lights/hazard/issignaling                          u8  -> both indicators
@@ -115,4 +115,4 @@ static int cmd_lamps(const struct shell *sh, size_t argc, char **argv)
 		    out_left.port ? "slot overlay" : "none (LAMP_SLOT=0)");
 	return 0;
 }
-SHELL_CMD_REGISTER(lamps, NULL, "vehicle lamp state from the ZoneLink VSS keys", cmd_lamps);
+SHELL_CMD_REGISTER(lamps, NULL, "vehicle lamp state from the VSS keys", cmd_lamps);

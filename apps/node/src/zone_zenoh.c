@@ -25,7 +25,7 @@ static volatile bool connected;
 static uint32_t n_hello, n_cmd, n_open_fail, n_reconnect;
 /* zenoh-pico 1.10 on Zephyr takes recv() == 0 (peer closed) for "no data" and never closes the
  * session, so a dead router or link went unnoticed. Anything we subscribe to counts as proof of life:
- * the ZoneLink sidecar sends vehicle/speed at >= 5 Hz. Nothing for WATCHDOG_MS = reconnect. */
+ * the vehicle-API sidecar sends vehicle/speed at >= 5 Hz. Nothing for WATCHDOG_MS = reconnect. */
 #define WATCHDOG_MS 15000
 static volatile int64_t last_rx_ms;
 static z_owned_publisher_t pub_ack;

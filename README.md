@@ -8,7 +8,7 @@
 | Curiosity Nano Base for Click boards | AC164162 | mikroBUS 소켓 3개 |
 | Two-Wire ETH Click | MIKROE-5543 | **LAN8651B1** 10BASE-T1S MAC-PHY (SPI, OPEN Alliance TC6) + AT24MAC402 (EUI-48) |
 
-전시 데모(`ioniq6-t1s-demo`)의 front / rear / interior / drive 노드 4개가 모두 이 조합이다.
+데모 차량의 front / rear / interior / drive 존 노드 4개가 모두 이 조합이다.
 
 ## 상태 (2026-10-27, 벤치 1대)
 
@@ -171,11 +171,11 @@ queue"), POSIX mutex 32 / cond 16(기본 ~5 → zenoh 의 `System error: 12` 후
 ## 차량 API → 존 램프 (CARLA/Autoware 연동)
 
 ```
-Autoware(aw-carla) ─ROS 2─ PLEOS 게이트웨이 :8780 (/io WS, /vss) ─ zonelink.py ─ zenohd ─ ESP 브리지 ─ T1S ─ SAM
-python3 ~/korea-autoware-sim/sdv/zonelink.py --api http://10.42.0.90:8780 --router tcp/192.168.100.51:7448
+Autoware(aw-carla) ─ROS 2─ HMI 게이트웨이 :8780 (/io WS, /vss) ─ zonelink.py ─ zenohd ─ ESP 브리지 ─ T1S ─ SAM
+python3 <vehicle-api-sidecar>/zonelink.py --api http://10.42.0.90:8780 --router tcp/192.168.100.51:7448
 ```
 
-`zonelink.py` 는 원래 웹 시뮬용 사이드카지만 PLEOS 게이트웨이가 같은 `/io`·`/vss` 형식을 내므로 그대로 붙는다. 노드는 `vehicle/**` 를 구독:
+`zonelink.py` 는 원래 웹 시뮬용 사이드카지만 HMI 게이트웨이가 같은 `/io`·`/vss` 형식을 내므로 그대로 붙는다. 노드는 `vehicle/**` 를 구독:
 방향지시등 좌/우, 비상등, 브레이크, 후진, 기어, 속도(생존 신호, 3 s 끊기면 램프 소등). 셸 `lamps`.
 **출력 핀(미리 배정, `dts/zone-lamps-slot1.overlay`, `-DLAMP_SLOT=1`, 0 = 없음)**: 좌 AN PA02 · 우 RST PA07 · 브레이크 PWM PA10(TCC0 ch2, 미등 감광 예정) ·
 후진 INT PA04, 3.3 V 푸시풀 — LED 는 저항/드라이버 클릭 경유. WS2812 스트립은 나중에 슬롯 1 TX PB12(SERCOM4 SPI 데이터) — MOSI 는 T1S 클릭과
@@ -269,7 +269,7 @@ interior 3, drive 0(코디네이터), 게이트웨이 4, count 5.
 
 1. **T1S 상대 연결 → ping.** EVB-LAN8670-USB(`evb-lan8670-usb/scripts/t1s-up.sh 0 8 192.168.100.70/24` = 코디네이터) 또는 ESP T1S HAT(`plca 0 8` + `save`)를
    같은 2선에 물리면 PST=1 이 되어야 하고 `net ping 192.168.100.70` 이 돌아야 한다. 버스 양 끝 노드만 클릭의 J1/J2 종단 점퍼를 둔다(기본 장착).
-2. **zenoh-pico** (ZoneLink 계획: Zenoh 단일 버스 + VSS 키 + priority→PCP).
+2. **zenoh-pico** (Zenoh 단일 버스 + VSS 키 + priority→PCP).
    zenoh-pico 는 Zephyr 모듈(`zephyr/module.yml`)을 갖고 있다. `ZEPHYR_EXTRA_MODULES` 로 붙이고, 클라이언트 모드로
    Autoware PC 의 `zenohd`(udp/tcp 7447) 에 접속 → `vehicle/<zone>/...` VSS 키 구독(램프·방향지시등·제동) / 상태 발행.
    T1S 는 10 Mb/s 반이중이라 멀티캐스트 스카우팅보다 라우터 주소를 고정하는 편이 낫다.

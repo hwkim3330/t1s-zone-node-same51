@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>T1S Bus Console</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--ink:#16181d;--mute:#6b7280;--line:#d9dce3;--ok:#16a34a;--warn:#d97706;--bad:#dc2626;--acc:#2563eb;--bus:#111827}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#181b21;--ink:#e8eaee;--mute:#8b93a1;--line:#2a2f38;--bus:#e5e7eb}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Noto Sans KR",sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line)}
+header h1{font-size:17px;margin:0;font-weight:650}
+header .sub{color:var(--mute);font-size:13px}
+header .sp{flex:1}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer}
+button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+button:disabled{opacity:.5}
+main{padding:16px 20px;max-width:1280px;margin:auto}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}
+svg{width:100%;height:auto;display:block}
+svg text{fill:var(--ink);font-family:inherit}
+svg .mute{fill:var(--mute)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px;margin-top:14px}
+.card h3{margin:0 0 6px;font-size:15px;display:flex;align-items:center;gap:8px}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block;background:var(--mute)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:13px}
+.kv span:nth-child(odd){color:var(--mute)}
+.row{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+input{font:inherit;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:8px;padding:5px 8px;min-width:0}
+pre{background:var(--bg);border-radius:8px;padding:8px;font:12px/1.35 ui-monospace,Menlo,monospace;height:150px;overflow:auto;margin:8px 0 0;white-space:pre-wrap;word-break:break-all}
+table{border-collapse:collapse;font-size:13px;margin-top:8px}
+td,th{border:1px solid var(--line);padding:4px 10px;text-align:center}
+.legend{color:var(--mute);font-size:12px;margin-top:6px}
+@media (max-width:600px){header{flex-wrap:wrap}main{padding:12px 16px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>T1S Bus Console</h1><span class="sub" id="sub">—</span><span class="sp"></span>
+  <button class="pri" id="pingall">전체 ping</button>
+</header>
+<main>
+  <div class="panel"><svg id="topo" viewBox="0 0 1200 420"></svg>
+    <div class="legend">초록 = 코디네이터 비컨 들림(PST=1) · 주황 = 링크는 있으나 비컨 없음 · 빨강 = 응답 없음 · 점선 = 아직 없는 노드 · 버스 양 끝(ESP, 마지막 노드)만 종단</div>
+  </div>
+  <div class="panel" id="pingbox" style="margin-top:14px;display:none"><b>ping 결과</b><div id="pingres"></div></div>
+  <div class="cards" id="cards"></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+let S = [], planned = 2;
+const col = b => (Date.now()/1000 - b.seen > 12) ? 'var(--bad)' : (b.pst ? 'var(--ok)' : (b.link ? 'var(--warn)' : 'var(--bad)'));
+const esc = s => String(s ?? '—').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+function topo() {
+  const esp = S.filter(b => b.kind === 'esp'), sam = S.filter(b => b.kind === 'sam')
+    .sort((a, b) => (a.plca_id ?? 99) - (b.plca_id ?? 99));
+  const nodes = [...sam, ...Array(planned).fill(null)];
+  const W = 1200, x0 = 300, x1 = W - 60, busY = 250, n = nodes.length;
+  const step = n > 1 ? (x1 - x0 - 120) / (n - 1) : 0;
+  let g = '';
+  // PC
+  const e = esp[0];
+  const lanUp = e && e.lan && e.lan.startsWith('up');
+  g += box(40, 30, 200, 70, 'PC / 스위치', '192.168.100.51 (USB LAN)', lanUp ? 'var(--ok)' : 'var(--mute)', !lanUp);
+  g += `<line x1="140" y1="100" x2="140" y2="150" stroke="var(--mute)" stroke-width="2" ${e && e.lan && e.lan.startsWith('up') ? '' : 'stroke-dasharray="6 5"'}/>`;
+  g += `<text x="152" y="130" font-size="12" class="mute">100BASE-TX (W5500 RJ45) · ${lanUp ? '링크 업' : 'LAN 미연결'}${e?.mode === 'bridge' ? ' · L2 브리지 ↓ ' + esc(e.br_down) + ' · ↑ ' + esc(e.br_up) : ''}</text>`;
+  // ESP
+  if (e) g += box(40, 150, 200, 86, e.name, `PLCA ${e.plca_id}/${e.plca_count} ${e.plca_id === 0 ? '코디네이터' : ''}`, col(e), false, e.mode === 'bridge' ? '브리지 모드 · IP 없음' : `${esc(e.ip)} · ptp ${esc(e.ptp)}`);
+  else g += box(40, 150, 200, 86, 'ESP 게이트웨이', '연결 안 됨', 'var(--bad)', true);
+  // bus
+  g += `<line x1="240" y1="${busY}" x2="${x1}" y2="${busY}" stroke="var(--bus)" stroke-width="5"/>`;
+  g += `<line x1="240" y1="${busY}" x2="240" y2="193" stroke="var(--bus)" stroke-width="5"/>`;
+  g += `<text x="${x0}" y="${busY - 14}" font-size="13" class="mute">10BASE-T1S 2선 버스 · 10 Mb/s 공유 · PLCA</text>`;
+  g += term(244, busY);
+  nodes.forEach((b, i) => {
+    const cx = x0 + 60 + i * step, last = i === n - 1;
+    g += `<line x1="${cx}" y1="${busY}" x2="${cx}" y2="${busY + 40}" stroke="var(--bus)" stroke-width="3" ${b ? '' : 'stroke-dasharray="5 4"'}/>`;
+    if (b) g += box(cx - 95, busY + 40, 190, 92, b.name, `PLCA ${b.plca_id ?? '?'} / ${b.plca_count ?? '?'}`, col(b), false, esc(b.ip), b.mac ? b.mac : '');
+    else g += box(cx - 95, busY + 40, 190, 92, 'SAM E51 (예정)', 'LAN8651 클릭', 'var(--mute)', true);
+    if (last) g += term(x1 - 4, busY);
+  });
+  $('#topo').innerHTML = g;
+}
+function box(x, y, w, h, t1, t2, c, dashed, t3 = '', t4 = '') {
+  return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10" fill="var(--card)" stroke="${c}" stroke-width="2.5" ${dashed ? 'stroke-dasharray="7 5"' : ''}/>
+  <circle cx="${x + 16}" cy="${y + 20}" r="6" fill="${c}"/>
+  <text x="${x + 30}" y="${y + 25}" font-size="14" font-weight="650">${esc(t1)}</text>
+  <text x="${x + 14}" y="${y + 46}" font-size="13">${esc(t2)}</text>
+  <text x="${x + 14}" y="${y + 64}" font-size="12" class="mute">${t3}</text>
+  <text x="${x + 14}" y="${y + 80}" font-size="11" class="mute">${esc(t4)}</text>`;
+}
+const term = (x, y) => `<rect x="${x - 6}" y="${y - 12}" width="12" height="24" rx="2" fill="var(--warn)"/><text x="${x}" y="${y + 30}" font-size="11" text-anchor="middle" class="mute">종단</text>`;
+
+function cards() {
+  const root = $('#cards');
+  S.forEach(b => {
+    let c = document.getElementById('c' + b.i);
+    if (!c) {
+      c = document.createElement('div'); c.className = 'panel card'; c.id = 'c' + b.i;
+      c.innerHTML = `<h3><span class="dot"></span><span class="nm"></span></h3><div class="kv"></div>
+        <div class="row"><input class="id" placeholder="PLCA id" size="6"><input class="cnt" placeholder="count" size="5" value="8">
+        <button class="setid">PLCA 적용</button></div>
+        <div class="row"><input class="cmd" placeholder="콘솔 명령" style="flex:1"><button class="run">실행</button></div><pre></pre>`;
+      c.querySelector('.setid').onclick = () => {
+        const id = c.querySelector('.id').value.trim(), cnt = c.querySelector('.cnt').value.trim();
+        if (!/^\d+$/.test(id)) return;
+        cmd(b.i, b.kind === 'sam' ? `t1s plca ${id} ${cnt}` : `plca ${id} ${cnt}`);
+      };
+      const run = () => { const v = c.querySelector('.cmd').value.trim(); if (v) cmd(b.i, v, 3); };
+      c.querySelector('.run').onclick = run;
+      c.querySelector('.cmd').onkeydown = ev => ev.key === 'Enter' && run();
+      root.appendChild(c);
+    }
+    c.querySelector('.dot').style.background = col(b);
+    c.querySelector('.nm').textContent = b.name;
+    c.querySelector('.kv').innerHTML = [
+      ['포트', b.tty], ['시리얼', b.serial], ['PLCA', `${b.plca_id ?? '?'} / ${b.plca_count ?? '?'}`],
+      ['비컨', b.pst == null ? '?' : (b.pst ? '들림 (PST=1)' : '없음')], ['IP', b.ip], ['MAC', b.mac],
+      ['rx / tx', `${b.rx ?? '?'} / ${b.tx ?? '?'}`], ...(b.kind === 'esp' ? [['모드', b.mode], ['LAN', b.lan], ['브리지 ↓', b.br_down], ['브리지 ↑', b.br_up]] : [])
+    ].map(([k, v]) => `<span>${k}</span><span>${esc(v)}</span>`).join('');
+    const pre = c.querySelector('pre'), atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+    if (!c.dataset.busy) { pre.textContent = b.log.join('\n'); if (atEnd) pre.scrollTop = pre.scrollHeight; }
+  });
+}
+async function cmd(i, c, wait = 1.5) {
+  const card = document.getElementById('c' + i), pre = card.querySelector('pre');
+  card.dataset.busy = 1; pre.textContent = '> ' + c + '\n…';
+  const r = await (await fetch('/api/cmd', {method: 'POST', body: JSON.stringify({i, cmd: c, wait})})).json();
+  pre.textContent = '> ' + c + '\n' + r.out.join('\n');
+  setTimeout(() => delete card.dataset.busy, 6000);
+}
+$('#pingall').onclick = async () => {
+  const btn = $('#pingall'); btn.disabled = true; btn.textContent = 'ping 중…';
+  $('#pingbox').style.display = ''; $('#pingres').textContent = '각 노드가 서로 3번씩 — 수십 초 걸린다';
+  const r = await (await fetch('/api/ping', {method: 'POST', body: '{}'})).json();
+  const names = [...new Set(r.flatMap(x => [x.src, x.dst]))]; const dsts = names.filter(n => n !== 'PC');
+  const cell = (s, d) => { const x = r.find(y => y.src === s && y.dst === d); if (!x) return '<td>—</td>';
+    const avg = x.ms.length ? (x.ms.reduce((a, b) => a + b, 0) / x.ms.length).toFixed(1) + ' ms' : '';
+    return `<td style="color:${x.ok === 3 ? 'var(--ok)' : x.ok ? 'var(--warn)' : 'var(--bad)'}">${x.ok}/3 ${avg}</td>`; };
+  $('#pingres').innerHTML = `<table><tr><th>보냄 ↓ / 받음 →</th>${dsts.map(n => `<th>${esc(n)}</th>`).join('')}</tr>` +
+    names.map(s => `<tr><th>${esc(s)}</th>${dsts.map(d => s === d ? '<td>·</td>' : cell(s, d)).join('')}</tr>`).join('') + '</table>';
+  btn.disabled = false; btn.textContent = '전체 ping';
+};
+async function tick() {
+  try {
+    S = await (await fetch('/api/state')).json();
+    $('#sub').textContent = `${S.length}개 보드 · ${new Date().toLocaleTimeString()}`;
+    topo(); cards();
+  } catch (e) { $('#sub').textContent = '서버 연결 끊김'; }
+}
+tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>

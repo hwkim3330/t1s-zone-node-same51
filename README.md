@@ -137,11 +137,15 @@ ESP T1S HAT(.65) 가 **PLCA 코디네이터 0/8** 이고 SAM E51 은 리프 노�
 
 | 보드 (nEDBG 시리얼) | 클릭 | MAC (AT24MAC402) | PLCA | IP |
 |---|---|---|---|---|
-| ESP T1S HAT | — | — | **0 = 코디네이터**, count 8 | 192.168.100.65 |
+| ESP T1S HAT (esp32-5) | — | — | **0 = 코디네이터**, count 8 | 브리지 모드: 없음 (node 모드 땐 .65) |
 | …000464 (보통 ttyACM0) | 슬롯 3, LAN8651 B1 | fc:c2:3d:39:e9:b8 | 3 | 192.168.100.73 |
 | …000469 (보통 ttyACM1) | 슬롯 3, LAN8651 B1 | fc:c2:3d:3a:0f:32 | 4 | 192.168.100.74 |
 
-ping 셋 다 서로 5/5, 1–2 ms. **ID·IP 는 셸로 바꾼 런타임 값이라 재부팅하면 빌드 기본값(…464 = 1/.71, …469 = 0/.70)으로 돌아간다** —
+ping 셋 다 서로 5/5, 1–2 ms. ESP 는 이제 **bridge 모드**(W5500 ⇄ T1S L2 브리지, ESP 자신은 IP 없음):
+벤치 PC USB LAN(192.168.100.51) → ESP RJ45 → T1S → .73/.74 ping 3/3, ≈2.1–2.4 ms. 되돌리기 `mode node` + `save` + `reboot`.
+
+**콘솔**: `python3 tools/console/server.py` → http://localhost:8830 — 토폴로지(라이브 PLCA/비컨/IP), 노드별 PLCA 적용·콘솔 명령,
+전체 ping 표(PC 포함). 시리얼 포트를 계속 열어 둔다(ESP 는 포트를 열 때마다 리셋되므로). nEDBG 는 DTR 이 서야 UART 를 넘긴다. **ID·IP 는 셸로 바꾼 런타임 값이라 재부팅하면 빌드 기본값(…464 = 1/.71, …469 = 0/.70)으로 돌아간다** —
 …469 가 0 으로 부팅하면 ESP 와 코디네이터 둘이 된다. node3/node4 이미지(`build/node3`, `build/node4`)는 빌드돼 있고 굽기만 남았다.
 (sudo 없이는 두 보드 중 하나를 고를 수 없음 → USB 하나 뽑고 `openocd … program` 하거나 `flash_one.sh`.)
 기존 키트 버스와 합칠 때 빈 ID 는 3·4·6(2 는 LAN8662 를 뺀 경우만); 4대째는 count 를 늘려야 할 수 있다.

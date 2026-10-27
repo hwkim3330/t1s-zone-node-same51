@@ -188,6 +188,7 @@ python3 ~/korea-autoware-sim/sdv/zonelink.py --api http://10.42.0.90:8780 --rout
 
 `tools/bench_up.sh` (다시 돌려도 안전, `stop`/`status`): zenohd(tcp/192.168.100.51:7448) + zonelink(Autoware → VSS, 죽으면 재시작) + 콘솔(:8830).
 로그 `~/.cache/t1s-bench/`. 장시간 점검 `tools/soak.py [분]` — 30 s 마다 hello·PTP·램프·RX 풀·ping·SMP·Zenoh 재접속을 보고 이상만 모은다.
+첫 소크(2026-10-27, v0.7.1, …464 + ESP 게이트웨이, 15 분): **문제 0**, PTP 780 표본 평균 0.2 ns · σ 9.6 ns · 최대 41 ns.
 
 ## 상시 운용 구성 (2026-10-27)
 

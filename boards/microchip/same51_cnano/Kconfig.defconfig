@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+
+if BOARD_SAME51_CNANO
+
+if NETWORKING
+
+config NET_L2_ETHERNET
+	default y
+
+endif # NETWORKING
+
+endif # BOARD_SAME51_CNANO

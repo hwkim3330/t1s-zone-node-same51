@@ -1,0 +1,15 @@
+identifier: same51_cnano
+name: SAM E51 Curiosity Nano
+type: mcu
+arch: arm
+toolchain:
+  - zephyr
+ram: 256
+flash: 1024
+supported:
+  - gpio
+  - spi
+  - i2c
+  - uart
+  - pwm
+vendor: microchip

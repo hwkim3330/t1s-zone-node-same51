@@ -1,0 +1,5 @@
+# SAM E51 Curiosity Nano (EV76S68A)
+# SPDX-License-Identifier: Apache-2.0
+
+config BOARD_SAME51_CNANO
+	select SOC_SAME51J20A

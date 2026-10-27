@@ -1,0 +1,228 @@
+/*
+ * SAM E51 Curiosity Nano (EV76S68A, ATSAME51J20A) on the
+ * Curiosity Nano Base for Click boards (AC164162).
+ *
+ * Sources:
+ *  - SAM E51 Curiosity Nano User Guide, DS70005432B: fig. 4-1 (pinout),
+ *    fig. 4-2 (Curiosity Nano Base quick reference), sec. 4.2 (LED0 PA14,
+ *    SW0 PA15, both active low), 32.768 kHz crystal.
+ *  - Curiosity Nano Base for Click boards User Guide, 50002839B.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+#include <atmel/same5xx20.dtsi>
+#include "same51_cnano-pinctrl.dtsi"
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+
+/ {
+	model = "SAM E51 Curiosity Nano";
+	compatible = "microchip,same51-cnano", "atmel,same51j20a", "atmel,same51";
+
+	chosen {
+		zephyr,console = &sercom5;
+		zephyr,shell-uart = &sercom5;
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+	};
+
+	aliases {
+		led0 = &led0;
+		sw0 = &button0;
+		i2c-0 = &sercom2;
+		spi-0 = &sercom1;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		led0: led_0 {
+			gpios = <&porta 14 GPIO_ACTIVE_LOW>;
+			label = "Yellow LED0";
+		};
+	};
+
+	buttons {
+		compatible = "gpio-keys";
+		button0: button_0 {
+			gpios = <&porta 15 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "SW0";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+
+	/*
+	 * The three mikroBUS sockets of the AC164162 base (DS70005432B fig. 4-2).
+	 * Nexus pin numbers follow dts/bindings/gpio/mikro-bus.yaml:
+	 *  0 AN, 1 RST, 2 CS, 3 SCK, 4 MISO, 5 MOSI, 6 PWM, 7 INT, 8 RX, 9 TX, 10 SCL, 11 SDA
+	 * SCK/MISO/MOSI (SERCOM1), SCL/SDA (SERCOM2) are shared by all slots;
+	 * RX/TX of slots 1 and 3 are the same pins (SERCOM4).
+	 */
+	mikrobus_1: mikrobus-connector-1 {
+		compatible = "mikro-bus";
+		#gpio-cells = <2>;
+		gpio-map-mask = <0xffffffff 0xffffffc0>;
+		gpio-map-pass-thru = <0 0x3f>;
+		gpio-map = <0 0 &porta 2 0>,	/* AN   PA2  */
+			   <1 0 &porta 7 0>,	/* RST  PA7  */
+			   <2 0 &porta 18 0>,	/* CS   PA18 */
+			   <3 0 &porta 17 0>,	/* SCK  PA17 */
+			   <4 0 &porta 19 0>,	/* MISO PA19 */
+			   <5 0 &porta 16 0>,	/* MOSI PA16 */
+			   <6 0 &porta 10 0>,	/* PWM  PA10 */
+			   <7 0 &porta 4 0>,	/* INT  PA4  */
+			   <8 0 &portb 13 0>,	/* RX   PB13 */
+			   <9 0 &portb 12 0>,	/* TX   PB12 */
+			   <10 0 &porta 13 0>,	/* SCL  PA13 */
+			   <11 0 &porta 12 0>;	/* SDA  PA12 */
+	};
+
+	mikrobus_2: mikrobus-connector-2 {
+		compatible = "mikro-bus";
+		#gpio-cells = <2>;
+		gpio-map-mask = <0xffffffff 0xffffffc0>;
+		gpio-map-pass-thru = <0 0x3f>;
+		gpio-map = <0 0 &portb 3 0>,	/* AN   PB3  */
+			   <1 0 &porta 6 0>,	/* RST  PA6  */
+			   <2 0 &portb 5 0>,	/* CS   PB5  */
+			   <3 0 &porta 17 0>,	/* SCK  PA17 */
+			   <4 0 &porta 19 0>,	/* MISO PA19 */
+			   <5 0 &porta 16 0>,	/* MOSI PA16 */
+			   <6 0 &porta 11 0>,	/* PWM  PA11 */
+			   <7 0 &portb 14 0>,	/* INT  PB14 */
+			   <8 0 &porta 9 0>,	/* RX   PA9  */
+			   <9 0 &porta 8 0>,	/* TX   PA8  */
+			   <10 0 &porta 13 0>,	/* SCL  PA13 */
+			   <11 0 &porta 12 0>;	/* SDA  PA12 */
+	};
+
+	mikrobus_3: mikrobus-connector-3 {
+		compatible = "mikro-bus";
+		#gpio-cells = <2>;
+		gpio-map-mask = <0xffffffff 0xffffffc0>;
+		gpio-map-pass-thru = <0 0x3f>;
+		gpio-map = <0 0 &portb 8 0>,	/* AN   PB8  */
+			   <1 0 &portb 6 0>,	/* RST  PB6  */
+			   <2 0 &portb 4 0>,	/* CS   PB4  */
+			   <3 0 &porta 17 0>,	/* SCK  PA17 */
+			   <4 0 &porta 19 0>,	/* MISO PA19 */
+			   <5 0 &porta 16 0>,	/* MOSI PA16 */
+			   <6 0 &portb 9 0>,	/* PWM  PB9  */
+			   <7 0 &portb 7 0>,	/* INT  PB7  */
+			   <8 0 &portb 13 0>,	/* RX   PB13 */
+			   <9 0 &portb 12 0>,	/* TX   PB12 */
+			   <10 0 &porta 13 0>,	/* SCL  PA13 */
+			   <11 0 &porta 12 0>;	/* SDA  PA12 */
+	};
+};
+
+&cpu0 {
+	clock-frequency = <120000000>;
+};
+
+/* Console on the nEDBG CDC (/dev/ttyACM0 on Linux) */
+&sercom5 {
+	status = "okay";
+	compatible = "atmel,sam0-uart";
+	current-speed = <115200>;
+	rxpo = <1>;
+	txpo = <0>;
+	pinctrl-0 = <&sercom5_uart_default>;
+	pinctrl-names = "default";
+};
+
+/*
+ * Shared mikroBUS SPI. cs-gpios index = slot - 1, so a click in slot N is
+ * the child with reg = <N-1>. Listing all three CS lines keeps the CS of
+ * empty or other-function slots driven inactive (high).
+ */
+mikrobus_spi: &sercom1 {
+	status = "okay";
+	compatible = "atmel,sam0-spi";
+	dipo = <3>;
+	dopo = <0>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	cs-gpios = <&porta 18 GPIO_ACTIVE_LOW>,	/* slot 1 CS PA18 */
+		   <&portb 5 GPIO_ACTIVE_LOW>,	/* slot 2 CS PB5  */
+		   <&portb 4 GPIO_ACTIVE_LOW>;	/* slot 3 CS PB4  */
+	pinctrl-0 = <&sercom1_spi_default>;
+	pinctrl-names = "default";
+};
+
+/* Shared mikroBUS I2C */
+mikrobus_i2c: &sercom2 {
+	status = "okay";
+	compatible = "atmel,sam0-i2c";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-0 = <&sercom2_i2c_default>;
+	pinctrl-names = "default";
+};
+
+/* mikroBUS UART of slots 1 and 3 (same pins). Disabled: enable in an overlay. */
+mikrobus_13_serial: &sercom4 {
+	status = "disabled";
+	compatible = "atmel,sam0-uart";
+	current-speed = <115200>;
+	rxpo = <1>;
+	txpo = <0>;
+	pinctrl-0 = <&sercom4_uart_default>;
+	pinctrl-names = "default";
+};
+
+/* mikroBUS UART of slot 2. Disabled: enable in an overlay. */
+mikrobus_2_serial: &sercom0 {
+	status = "disabled";
+	compatible = "atmel,sam0-uart";
+	current-speed = <115200>;
+	rxpo = <1>;
+	txpo = <0>;
+	pinctrl-0 = <&sercom0_uart_default>;
+	pinctrl-names = "default";
+};
+
+/*
+ * mikroBUS PWM for slots 1 (TCC0 ch 2) and 2 (TCC0 ch 3). Disabled: an
+ * overlay sets status = "okay" and picks tcc0_mikrobus_{1,2,12}_pwm.
+ */
+mikrobus_pwm: &tcc0 {
+	status = "disabled";
+	compatible = "atmel,sam0-tcc-pwm";
+	prescaler = <8>;
+	#pwm-cells = <2>;
+	pinctrl-0 = <&tcc0_mikrobus_12_pwm>;
+	pinctrl-names = "default";
+};
+
+&adc0 {
+	status = "okay";
+};
+
+&flash0 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/* last 16 KiB for settings/NVS (PLCA node id, IP) */
+		storage_partition: partition@fc000 {
+			label = "storage";
+			reg = <0x000fc000 0x00004000>;
+		};
+	};
+};
+
+/*
+ * Per-slot labels so a click overlay can say &mikrobus_2_spi, &mikrobus_3_i2c,
+ * &mikrobus_1_serial ... without knowing which SERCOM sits behind the slot.
+ */
+mikrobus_1_spi: &sercom1 {};
+mikrobus_2_spi: &sercom1 {};
+mikrobus_3_spi: &sercom1 {};
+mikrobus_1_i2c: &sercom2 {};
+mikrobus_2_i2c: &sercom2 {};
+mikrobus_3_i2c: &sercom2 {};
+mikrobus_1_serial: &sercom4 {};
+mikrobus_3_serial: &sercom4 {};

@@ -1,0 +1,5 @@
+board:
+  name: same51_cnano
+  vendor: microchip
+  socs:
+    - name: same51j20a

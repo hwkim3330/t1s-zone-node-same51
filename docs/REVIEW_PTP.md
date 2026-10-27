@@ -33,3 +33,29 @@ Hardware: SAM E51 Curiosity Nano + MIKROE-5543 (LAN8651 B1), SPI 15 MHz, PLCA fo
    `lan865x_port_send` (up to 20 ms, polling STATUS0) acceptable, or should it be deferred?
 
 Known open items (not to review): ESP32 side as gPTP grandmaster; ptp4l interoperability over D10/LAN9360.
+
+## Added 2026-10-27 evening (after the first hardware runs)
+
+Measured since: our UDP 5007 lock SAM <-> ESP gateway, hardware stamps on both ends, 15 min soak: offset mean 0.2 ns,
+sd 9.6 ns, max 41 ns (in-loop); re-lock within 40 s after the master reboots. Please check these fixes and the new code:
+
+8. **Capture overflow.** After a late frame (left after the reader's 5 ms wait), the next capture set STATUS1.TTSCOFA
+   (bit 21) and the chip never captured again; IMASK1 (0x3FFE0003) masks it, so EXST never told the driver. The fix
+   writes STATUS1 bits 21..26 and STATUS0.TTSCAA (write-1-to-clear) after every capture attempt (`t1s_take_tx_stamp`,
+   and the gPTP path in `lan865x_port_send`). Can clearing at that point ever drop a capture that is still in flight
+   for the *next* request? Is unmasking TTSCAA / TTSCOFA (and handling them in the IRQ thread) the better design?
+9. **Socket timeouts.** `CONFIG_NET_CONTEXT_RCVTIMEO` is off by default in Zephyr 3.7, which makes `SO_RCVTIMEO`
+   silently ineffective (the lock thread blocked for ever on one lost reply). Any other default of that kind a
+   UDP/TCP time-sync or zenoh-pico client should expect?
+10. **Promiscuous mode.** `net_promisc_mode_on()` queues a copy of every received frame for an application reader;
+    with none, the RX packet slab was empty after 25 s. We now set LAN8651 MAC_NCFGR.CAF directly for gPTP's
+    01:80:C2:00:00:0E. Is that the intended Zephyr pattern, or should the driver program the multicast hash / a
+    specific address filter (MAC_SAB2/SAT2) instead?
+11. **ESP gateway** (`elite-t1s-hat` firmware, `bridge.h`, `startGateway` / `gwInput` / `gwGate`): node mode's lwIP
+    netif stays on the LAN8651 glue; T1S and W5500 inputs go through a learning bridge that hands frames addressed to
+    this board (own MAC, group) to lwIP; lwIP's own frames are redirected in the LAN865x TX gate by source MAC (group /
+    unknown also out of the W5500, learned-on-W5500 only there). Look for loops, duplicate delivery, or a frame that
+    reaches neither side.
+12. **zenoh-pico 1.10 on Zephyr** treats `recv() == 0` (peer closed) as "no data" (`tcp_zephyr.c`), and the built-in
+    auto-reconnect went silent after a bus outage; the app now runs its own receive watchdog. Is that a known issue /
+    is there a supported way to detect a dead TCP link in zenoh-pico?

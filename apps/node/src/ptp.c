@@ -116,7 +116,7 @@ static int64_t take_tx_stamp(void)
 {
 	uint64_t ts;
 
-	if (t1s_take_tx_stamp(t1s, &ts, 5) == 0) {
+	if (t1s_take_tx_stamp(t1s, &ts, 20) == 0) {
 		n_tx_got++;
 		return ts_to_ns(ts);
 	}

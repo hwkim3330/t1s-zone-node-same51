@@ -57,27 +57,43 @@ int t1s_reg_write(const struct device *dev, uint32_t reg, uint32_t val)
 	return ret;
 }
 
+/*
+ * STATUS1 TTSCOF{A,B,C} (21..23) and TTSCM{A,B,C} (24..26): a capture that overflowed (a new one
+ * while TTSCAA was still set, e.g. a frame that left after the reader gave up) blocks every later
+ * capture until cleared, and IMASK1 masks them so the driver never sees them. Write-1-to-clear.
+ */
+#define STATUS1_TTSC_ERR (0x3fu << 21)
+
+static void clear_capture(const struct device *dev)
+{
+	t1s_reg_write(dev, 0x00000009, STATUS1_TTSC_ERR);
+	t1s_reg_write(dev, 0x00000008, BIT(8));
+}
+
 int t1s_take_tx_stamp(const struct device *dev, uint64_t *ts, int timeout_ms)
 {
 	struct lan865x_data *ctx = dev->data;
 	struct oa_tc6 *tc6 = ctx->tc6;
+	int ret = -EAGAIN;
 
 	for (int i = 0; i < timeout_ms * 10; i++) {
 		if (tc6->tx_ts_valid) { /* the driver's status check got there first */
 			*ts = tc6->tx_ts;
 			tc6->tx_ts_valid = false;
-			return 0;
+			ret = 0;
+			break;
 		}
 		uint32_t st = 0, hi = 0, lo = 0;
 
 		if (t1s_reg_read(dev, 0x00000008, &st) == 0 && (st & BIT(8))) { /* STATUS0.TTSCAA */
 			t1s_reg_read(dev, 0x00000010, &hi);
 			t1s_reg_read(dev, 0x00000011, &lo);
-			t1s_reg_write(dev, 0x00000008, BIT(8)); /* write-1-to-clear */
 			*ts = (uint64_t)hi << 32 | lo;
-			return 0;
+			ret = 0;
+			break;
 		}
 		k_busy_wait(100);
 	}
-	return -EAGAIN;
+	clear_capture(dev); /* never leave a stamp or an overflow behind for the next request */
+	return ret;
 }

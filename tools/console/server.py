@@ -39,25 +39,51 @@ class Board:
                    'rx': None, 'tx': None, 'mac': None, 'lan': None, 'seen': 0}
         self.lines = []          # recent console lines (for the page's log and for command replies)
         self.lock = threading.Lock()
-        self.s = serial.Serial()
-        self.s.port, self.s.baudrate, self.s.timeout = path, 115200, 0.2
-        # ESP: DTR/RTS low keeps it out of reset / download mode. nEDBG: forwards the UART only with DTR set.
-        self.s.dtr = self.s.rts = self.kind == 'sam'
-        self.s.open()
+        self.s = None
+        self.open()
         threading.Thread(target=self.reader, daemon=True).start()
         threading.Thread(target=self.poller, daemon=True).start()
 
+    def open(self):
+        """(Re)open the port; boards get unplugged and come back (flashing one at a time)."""
+        try:
+            s = serial.Serial()
+            s.port, s.baudrate, s.timeout = self.path, 115200, 0.2
+            # ESP: DTR/RTS low keeps it out of reset / download mode. nEDBG: forwards the UART only with DTR set.
+            s.dtr = s.rts = self.kind == 'sam'
+            s.open()
+            self.s = s
+            return True
+        except Exception:
+            self.s = None
+            return False
+
     def send(self, cmd):
         with self.lock:
-            self.s.write(cmd.encode() + b'\r\n')
+            try:
+                if self.s:
+                    self.s.write(cmd.encode() + b'\r\n')
+            except Exception:
+                self.s = None
 
     def reader(self):
         buf = b''
         while True:
+            if self.s is None:
+                time.sleep(1)
+                if self.open():
+                    self.lines.append((time.time(), '[console] port reopened'))
+                continue
             try:
                 buf += self.s.read(4096)
             except Exception:
-                time.sleep(1); continue
+                try:
+                    self.s.close()
+                except Exception:
+                    pass
+                self.s = None; self.st['seen'] = 0
+                self.lines.append((time.time(), '[console] port lost (unplugged?)'))
+                continue
             *done, buf = buf.split(b'\n')
             for raw in done:
                 line = ANSI.sub('', raw.decode(errors='replace')).replace('uart:~$', '').strip()

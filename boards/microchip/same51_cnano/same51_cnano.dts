@@ -25,6 +25,7 @@
 		zephyr,shell-uart = &sercom5;
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_partition;
 	};
 
 	aliases {
@@ -210,7 +211,24 @@ mikrobus_pwm: &tcc0 {
 		#address-cells = <1>;
 		#size-cells = <1>;
 
-		/* last 16 KiB for settings/NVS (PLCA node id, IP) */
+		/*
+		 * 1 MiB, 8 KiB erase blocks. MCUboot + two equal image slots so a node can be
+		 * updated over the network (mcumgr SMP/UDP), then 16 KiB settings at the end.
+		 * Builds without MCUboot ignore the layout and link at 0 as before.
+		 */
+		boot_partition: partition@0 {
+			label = "mcuboot";
+			reg = <0x00000000 0x00010000>;
+		};
+		slot0_partition: partition@10000 {
+			label = "image-0";
+			reg = <0x00010000 0x00076000>;
+		};
+		slot1_partition: partition@86000 {
+			label = "image-1";
+			reg = <0x00086000 0x00076000>;
+		};
+		/* settings/NVS (PLCA node id, count, IP) */
 		storage_partition: partition@fc000 {
 			label = "storage";
 			reg = <0x000fc000 0x00004000>;

@@ -130,6 +130,31 @@ LED0: 켜짐 고정 = PLCA 비컨 수신(버스 동작), 1 Hz 깜빡임 = 코디
    프로브를 고르면 `*** buffer overflow detected ***` 로 abort 한다(usb_bulk 백엔드는 nEDBG 를 못 찾음). 우회: 다른 보드의 USB 를 잠시
    숨기고 단독으로 굽는다 — `tools/flash_one.sh <serial끝자리> <hex>`.
 
+## 네트워크 펌웨어 업데이트 (MCUboot + mcumgr SMP/UDP)
+
+보드마다 **USB 로 한 번만** MCUboot + 앱을 굽고, 그 뒤로는 T1S 너머로 올린다(USB 불필요):
+
+```
+nice west build -p --sysbuild -b same51_cnano -d $R/build/node-v2 $R/apps/node -- -DBOARD_ROOT=$R -DT1S_SLOT=3 \
+    -Dnode_CONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION=\"0.1.0+1\"
+# 처음 한 번(USB, 그 보드만 꽂힌 상태):
+openocd -f boards/microchip/same51_cnano/support/openocd.cfg -c init -c 'reset init' \
+    -c "program build/node-v2/mcuboot/zephyr/zephyr.hex verify" -c "program build/node-v2/node/zephyr/zephyr.signed.hex verify reset" -c shutdown
+# 이후(네트워크, 여러 대는 쉼표로):
+tools/smp_udp.py 192.168.100.73,192.168.100.74 update build/node-v2/node/zephyr/zephyr.signed.bin
+tools/smp_udp.py 192.168.100.73 list
+```
+
+실측(2026-10-27, PC → ESP 브리지 → T1S): 176 KB 3.3 s(≈430–600 kbit/s), 스왑+부팅 포함 ≈17 s. 앱은 네트워크 드라이버가 올라온 뒤
+스스로 이미지를 확정한다 → 부팅 못 하는 이미지는 다음 리셋에 MCUboot 가 되돌린다. 서명 키는 MCUboot 개발 키(벤치용).
+파티션: boot 64K · slot0/slot1 472K · storage 16K (`same51_cnano.dts`). 버전을 안 올리면 같은 해시라 스왑이 안 일어난다.
+
+## 노드 정체성 (ID/IP)
+
+부팅 시 순서: **저장값**(`t1s save`) → **MAC 표**(`main.c` 의 `bench[]`, 클릭 EEPROM 의 EUI-48) → Kconfig. 그래서 모든 보드가 같은
+이미지를 쓴다. 셸: `t1s plca <id> [count]`, `t1s ip <a.b.c.d>`, `t1s save`, `t1s forget`. 비컨이 돌아오면(PST 0→1) PLCA 를 자동 재적용한다
+(아래 송신 멈춤 함정의 수정).
+
 ## ESP + 2노드 버스 (2026-10-27)
 
 ESP T1S HAT(.65) 가 **PLCA 코디네이터 0/8** 이고 SAM E51 은 리프 노드다(이 보드엔 LAN 포트가 없어 게이트웨이가 될 수 없다).
@@ -145,14 +170,12 @@ ping 셋 다 서로 5/5, 1–2 ms. ESP 는 이제 **bridge 모드**(W5500 ⇄ T1
 벤치 PC USB LAN(192.168.100.51) → ESP RJ45 → T1S → .73/.74 ping 3/3, ≈2.1–2.4 ms. 되돌리기 `mode node` + `save` + `reboot`.
 
 **콘솔**: `python3 tools/console/server.py` → http://localhost:8830 — 토폴로지(라이브 PLCA/비컨/IP), 노드별 PLCA 적용·콘솔 명령,
-전체 ping 표(PC 포함). 시리얼 포트를 계속 열어 둔다(ESP 는 포트를 열 때마다 리셋되므로). nEDBG 는 DTR 이 서야 UART 를 넘긴다. **ID·IP 는 셸로 바꾼 런타임 값이라 재부팅하면 빌드 기본값(…464 = 1/.71, …469 = 0/.70)으로 돌아간다** —
-…469 가 0 으로 부팅하면 ESP 와 코디네이터 둘이 된다. node3/node4 이미지(`build/node3`, `build/node4`)는 빌드돼 있고 굽기만 남았다.
-(sudo 없이는 두 보드 중 하나를 고를 수 없음 → USB 하나 뽑고 `openocd … program` 하거나 `flash_one.sh`.)
+전체 ping 표(PC 포함). 시리얼 포트를 계속 열어 둔다(ESP 는 포트를 열 때마다 리셋되므로). nEDBG 는 DTR 이 서야 UART 를 넘긴다. ID·IP 는 이제 MAC 표로 정해져 재부팅해도 유지된다.
 기존 키트 버스와 합칠 때 빈 ID 는 3·4·6(2 는 LAN8662 를 뺀 경우만); 4대째는 count 를 늘려야 할 수 있다.
 
 ### 송신 멈춤 함정
 
-코디네이터 없이(PST=0) 부팅한 노드는 ARP 몇 개를 칩에 쌓은 뒤 `tx` 바이트가 고정된다. 비컨이 나타나도 저절로 풀리지 않았고,
+(고침: 펌웨어가 PST 0→1 에서 자동 재적용.) 코디네이터 없이(PST=0) 부팅한 노드는 ARP 몇 개를 칩에 쌓은 뒤 `tx` 바이트가 고정된다. 비컨이 나타나도 저절로 풀리지 않았고,
 **`t1s plca <id> <count>` 를 다시 적용하자** 바로 송신이 재개됐다. 펌웨어 수정 후보: PST 0→1 전이 때 PLCA 를 자동 재적용.
 
 ## PLCA id 주의 (벤치 버스)

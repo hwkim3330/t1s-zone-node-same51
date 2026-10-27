@@ -149,6 +149,25 @@ tools/smp_udp.py 192.168.100.73 list
 스스로 이미지를 확정한다 → 부팅 못 하는 이미지는 다음 리셋에 MCUboot 가 되돌린다. 서명 키는 MCUboot 개발 키(벤치용).
 파티션: boot 64K · slot0/slot1 472K · storage 16K (`same51_cnano.dts`). 버전을 안 올리면 같은 해시라 스왑이 안 일어난다.
 
+## Zenoh (zenoh-pico 1.10.1 클라이언트)
+
+노드는 PC 의 zenohd 에 TCP 클라이언트로 붙는다(ESP 브리지 경유). 라우터는 Kconfig `APP_ZENOH_LOCATOR`(기본 `tcp/192.168.100.51:7448`)
+또는 셸 `zenoh <locator>`(즉시 저장). 키:
+
+| 키 | 방향 | 내용 |
+|---|---|---|
+| `t1s/sam<id>/hello` | 노드→ | 1 Hz `{"id":3,"ip":"192.168.100.73","up":24,"pst":1,"cmds":2}` |
+| `t1s/sam<id>/cmd`, `t1s/all/cmd` | →노드 | `led on/off/blink/auto`, `ping` |
+| `t1s/sam<id>/ack` | 노드→ | 처리한 명령 / `pong` |
+
+실측(2026-10-27): PC put → ack 수신 **≈3 ms** (zenohd → ESP 브리지 → T1S → SAM → 역방향). 테스트 라우터:
+`/opt/zenoh/1.10.1/zenohd --listen tcp/192.168.100.51:7448 --no-multicast-scouting` (시스템 `zenohd.service` 는 EVB 주소 .70 에 묶여 있어
+EVB 가 없으면 재시작 루프 — 건드리지 않았다).
+
+필요했던 것(기본값으로는 조용히 실패): `NET_MAX_CONN` 12(기본 4 → "Not enough connection contexts"), 패킷/버퍼 풀 증설("Cannot allocate recv
+queue"), POSIX mutex 32 / cond 16(기본 ~5 → zenoh 의 `System error: 12` 후 22 반복), 모듈이 안 만들어 주는 `config.h` 를 `apps/node/zenoh-config/`
+에 둠. zenoh 재접속 루프가 버퍼를 잡아먹은 이미지에는 SMP 업로드도 안 들어가 → `kernel reboot cold` 직후 올리면 된다.
+
 ## 노드 정체성 (ID/IP)
 
 부팅 시 순서: **저장값**(`t1s save`) → **MAC 표**(`main.c` 의 `bench[]`, 클릭 EEPROM 의 EUI-48) → Kconfig. 그래서 모든 보드가 같은

@@ -27,4 +27,13 @@ config APP_STATUS_PERIOD_S
 	int "Seconds between status lines on the console (0 = off)"
 	default 5
 
+config APP_ZENOH
+	bool "zenoh-pico client (t1s/sam<id>/hello, /cmd, /ack)"
+	default y
+
+config APP_ZENOH_LOCATOR
+	string "zenohd to connect to (shell `zenoh <locator>` overrides, saved)"
+	default "tcp/192.168.100.51:7448"
+	depends on APP_ZENOH
+
 source "Kconfig.zephyr"

@@ -1,0 +1,168 @@
+/*
+ * Zenoh on the zone node: a zenoh-pico client of the PC's zenohd, reached over T1S through the
+ * ESP bridge. Keys (same shape as the ESP T1S HAT's `t1s/<node>/...`):
+ *   t1s/sam<id>/hello   pub, 1 Hz: {"id":3,"ip":"192.168.100.73","up":12,"pst":1,"cmds":0}
+ *   t1s/sam<id>/cmd     sub: "led on" | "led off" | "led blink" | "led auto" | "ping"
+ *   t1s/all/cmd         sub: the same, to every node at once
+ *   t1s/sam<id>/ack     pub: what a command did
+ * Router: CONFIG_APP_ZENOH_LOCATOR, or the shell `zenoh <locator>` (saved at once).
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+#include <stdio.h>
+#include <string.h>
+#include <zephyr/kernel.h>
+#include <zephyr/shell/shell.h>
+#include <zephyr/settings/settings.h>
+#include <zephyr/logging/log.h>
+#include <zenoh-pico.h>
+#include "zone.h"
+
+LOG_MODULE_REGISTER(zone_zenoh, LOG_LEVEL_INF);
+
+static char locator[64] = CONFIG_APP_ZENOH_LOCATOR;
+static volatile bool connected;
+static uint32_t n_hello, n_cmd, n_open_fail;
+static z_owned_publisher_t pub_ack;
+static bool ack_ok;
+
+static int zz_set(const char *key, size_t len, settings_read_cb read, void *arg)
+{
+	if (!strcmp(key, "locator") && len < sizeof(locator)) {
+		int n = read(arg, locator, len);
+
+		locator[n > 0 ? n : 0] = 0;
+	}
+	return 0;
+}
+SETTINGS_STATIC_HANDLER_DEFINE(zz, "zenoh", NULL, zz_set, NULL, NULL);
+
+static void ack(const char *msg)
+{
+	if (!ack_ok) {
+		return;
+	}
+	z_owned_bytes_t b;
+
+	z_bytes_copy_from_str(&b, msg);
+	z_publisher_put(z_publisher_loan(&pub_ack), z_bytes_move(&b), NULL);
+}
+
+static void on_cmd(z_loaned_sample_t *sample, void *arg)
+{
+	z_owned_string_t s;
+	char cmd[48] = {0};
+
+	z_bytes_to_string(z_sample_payload(sample), &s);
+	size_t n = MIN(z_string_len(z_string_loan(&s)), sizeof(cmd) - 1);
+
+	memcpy(cmd, z_string_data(z_string_loan(&s)), n);
+	z_string_drop(z_string_move(&s));
+	n_cmd++;
+
+	if (!strncmp(cmd, "led ", 4)) {
+		const char *m = cmd + 4;
+		int mode = !strcmp(m, "on") ? ZONE_LED_ON : !strcmp(m, "off") ? ZONE_LED_OFF
+			 : !strcmp(m, "blink") ? ZONE_LED_BLINK : ZONE_LED_AUTO;
+
+		zone_led_mode = mode;
+		LOG_INF("cmd '%s' -> led mode %d", cmd, mode);
+		ack(cmd);
+	} else if (!strcmp(cmd, "ping")) {
+		ack("pong");
+	} else {
+		LOG_WRN("cmd '%s' not understood", cmd);
+		ack("unknown");
+	}
+}
+
+static void zenoh_thread(void *a, void *b, void *c)
+{
+	char ke[40], msg[128];
+
+	while (!zone_bus_up()) {
+		k_msleep(500);
+	}
+	for (;;) {
+		z_owned_config_t cfg;
+		z_owned_session_t s;
+
+		z_config_default(&cfg);
+		zp_config_insert(z_config_loan_mut(&cfg), Z_CONFIG_MODE_KEY, "client");
+		zp_config_insert(z_config_loan_mut(&cfg), Z_CONFIG_CONNECT_KEY, locator);
+		if (z_open(&s, z_config_move(&cfg), NULL) < 0) {
+			if (n_open_fail++ % 10 == 0) {
+				LOG_WRN("zenoh: cannot reach %s (try %u)", locator, n_open_fail);
+			}
+			k_msleep(3000);
+			continue;
+		}
+		zp_start_read_task(z_session_loan_mut(&s), NULL);
+		zp_start_lease_task(z_session_loan_mut(&s), NULL);
+
+		uint8_t id = zone_plca_id();
+		z_owned_publisher_t hello;
+		z_owned_subscriber_t sub1, sub2;
+		z_owned_closure_sample_t c1, c2;
+		z_view_keyexpr_t k;
+
+		snprintf(ke, sizeof(ke), "t1s/sam%u/hello", id);
+		z_view_keyexpr_from_str_unchecked(&k, ke);
+		z_declare_publisher(z_session_loan(&s), &hello, z_view_keyexpr_loan(&k), NULL);
+		snprintf(ke, sizeof(ke), "t1s/sam%u/ack", id);
+		z_view_keyexpr_from_str_unchecked(&k, ke);
+		ack_ok = z_declare_publisher(z_session_loan(&s), &pub_ack, z_view_keyexpr_loan(&k), NULL) == 0;
+		snprintf(ke, sizeof(ke), "t1s/sam%u/cmd", id);
+		z_view_keyexpr_from_str_unchecked(&k, ke);
+		z_closure(&c1, on_cmd, NULL, NULL);
+		z_declare_subscriber(z_session_loan(&s), &sub1, z_view_keyexpr_loan(&k), z_closure_sample_move(&c1), NULL);
+		z_view_keyexpr_from_str_unchecked(&k, "t1s/all/cmd");
+		z_closure(&c2, on_cmd, NULL, NULL);
+		z_declare_subscriber(z_session_loan(&s), &sub2, z_view_keyexpr_loan(&k), z_closure_sample_move(&c2), NULL);
+
+		connected = true;
+		LOG_INF("zenoh: connected to %s as t1s/sam%u", locator, id);
+
+		/* z_publisher_put fails once the lease task has closed a dead session */
+		for (;;) {
+			char ip[16];
+			z_owned_bytes_t pl;
+
+			zone_ip_str(ip, sizeof(ip));
+			snprintf(msg, sizeof(msg), "{\"id\":%u,\"ip\":\"%s\",\"up\":%u,\"pst\":%d,\"cmds\":%u}",
+				 id, ip, (unsigned)(k_uptime_get() / 1000), zone_bus_up(), n_cmd);
+			z_bytes_copy_from_str(&pl, msg);
+			if (z_publisher_put(z_publisher_loan(&hello), z_bytes_move(&pl), NULL) < 0) {
+				break;
+			}
+			n_hello++;
+			k_msleep(1000);
+		}
+		LOG_WRN("zenoh: session lost, reconnecting");
+		connected = false;
+		ack_ok = false;
+		z_undeclare_subscriber(z_subscriber_move(&sub1));
+		z_undeclare_subscriber(z_subscriber_move(&sub2));
+		z_undeclare_publisher(z_publisher_move(&hello));
+		z_undeclare_publisher(z_publisher_move(&pub_ack));
+		z_session_drop(z_session_move(&s));
+		k_msleep(1000);
+	}
+}
+
+K_THREAD_DEFINE(zenoh_tid, 6144, zenoh_thread, NULL, NULL, NULL, 7, 0, 2000);
+
+static int cmd_zenoh(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc > 1) {
+		strncpy(locator, argv[1], sizeof(locator) - 1);
+		settings_save_one("zenoh/locator", locator, strlen(locator));
+		shell_print(sh, "zenoh: router %s saved (takes effect on reconnect / reboot)", locator);
+		return 0;
+	}
+	shell_print(sh, "zenoh: %s %s | hello sent %u | cmds %u | open failures %u",
+		    connected ? "connected to" : "not connected, router", locator, n_hello, n_cmd,
+		    n_open_fail);
+	return 0;
+}
+SHELL_CMD_REGISTER(zenoh, NULL, "zenoh [locator]: status, or set the router (saved)", cmd_zenoh);

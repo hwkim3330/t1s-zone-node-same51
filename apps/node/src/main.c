@@ -22,6 +22,7 @@
 #include <zephyr/dfu/mcuboot.h>
 #include <zephyr/logging/log.h>
 #include "t1s_diag.h"
+#include "zone.h"
 
 LOG_MODULE_REGISTER(zone_node, LOG_LEVEL_INF);
 
@@ -53,6 +54,9 @@ static const struct {
 };
 
 static struct in_addr my_ip;
+static volatile bool bus_up;
+volatile int zone_led_mode = ZONE_LED_AUTO;
+
 static struct ethernet_req_params plca_cfg = {
 	.t1s_param = {
 		.type = ETHERNET_T1S_PARAM_TYPE_PLCA_CONFIG,
@@ -66,6 +70,10 @@ static struct ethernet_req_params plca_cfg = {
 		},
 	},
 };
+
+bool zone_bus_up(void) { return bus_up; }
+uint8_t zone_plca_id(void) { return plca_cfg.t1s_param.plca.node_id; }
+void zone_ip_str(char *buf, size_t len) { net_addr_ntop(AF_INET, &my_ip, buf, len); }
 
 static int apply_plca(void)
 {
@@ -121,7 +129,7 @@ static void pick_identity(void)
 	struct in_addr kc = my_ip;
 
 	settings_subsys_init();
-	settings_load_subtree("zone");
+	settings_load(); /* "zone/..." here, "zenoh/..." in zone_zenoh.c */
 	saved_ip = my_ip.s_addr != kc.s_addr;
 
 	if (strcmp(id_src, "saved")) {
@@ -324,11 +332,24 @@ int main(void)
 		}
 		was_pst = pst;
 
-		/* LED0: solid = PLCA active (beacons), slow blink = waiting for a coordinator */
-		if (pst) {
+		bus_up = pst;
+		/* LED0 (AUTO): solid = PLCA active (beacons), slow blink = waiting for a coordinator */
+		switch (zone_led_mode) {
+		case ZONE_LED_ON:
 			gpio_pin_set_dt(&led, 1);
-		} else {
+			break;
+		case ZONE_LED_OFF:
+			gpio_pin_set_dt(&led, 0);
+			break;
+		case ZONE_LED_BLINK:
 			gpio_pin_toggle_dt(&led);
+			break;
+		default:
+			if (pst) {
+				gpio_pin_set_dt(&led, 1);
+			} else {
+				gpio_pin_toggle_dt(&led);
+			}
 		}
 		if (CONFIG_APP_STATUS_PERIOD_S && k_uptime_get() >= next) {
 			print_status(NULL);

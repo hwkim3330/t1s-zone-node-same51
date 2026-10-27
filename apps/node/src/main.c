@@ -298,7 +298,27 @@ static int cmd_forget(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_reg(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc < 2) {
+		shell_print(sh, "usage: t1s reg <hex reg = mms<<16|addr> [hex value to write]");
+		return -EINVAL;
+	}
+	uint32_t reg = strtoul(argv[1], NULL, 16), v = 0;
+	int ret;
+
+	if (argc > 2) {
+		v = strtoul(argv[2], NULL, 16);
+		ret = t1s_reg_write(t1s, reg, v);
+	} else {
+		ret = t1s_reg_read(t1s, reg, &v);
+	}
+	shell_print(sh, "reg %06x = %08x (%d)", reg, v, ret);
+	return ret;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(t1s_cmds,
+	SHELL_CMD(reg, NULL, "t1s reg <reg> [value]: raw LAN865x register (hex)", cmd_reg),
 	SHELL_CMD(status, NULL, "LAN865x PLCA / link / counters", cmd_status),
 	SHELL_CMD(plca, NULL, "t1s plca <id|csma> [count] [to_timer]", cmd_plca),
 	SHELL_CMD(ip, NULL, "t1s ip <a.b.c.d>", cmd_ip),

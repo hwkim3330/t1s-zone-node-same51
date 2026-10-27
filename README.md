@@ -126,6 +126,18 @@ LED0: 켜짐 고정 = PLCA 비컨 수신(버스 동작), 1 Hz 깜빡임 = 코디
 2. 업스트림 `spi_sam0`/`i2c_sam0` 는 SERCOM 코어를 GCLK0(120 MHz)에 물린다. 데이터시트 상 SERCOM 코어 최대는 100 MHz 라 규격 밖이다
    (same54_xpro 도 같음). 실측상 4 MHz·15 MHz SPI 모두 정상 — 추후 GCLK 분주 패치 후보.
 3. `STATUS.TXT` 는 캐시된 파일이라 오래된 내용이 보인다 (가이드에도 경고 있음).
+4. **보드 2대를 꽂으면 `west flash` 가 죽는다.** Ubuntu openocd 0.12 의 cmsis-dap HID 백엔드는 `adapter serial`/`cmsis_dap_serial` 로
+   프로브를 고르면 `*** buffer overflow detected ***` 로 abort 한다(usb_bulk 백엔드는 nEDBG 를 못 찾음). 우회: 다른 보드의 USB 를 잠시
+   숨기고 단독으로 굽는다 — `tools/flash_one.sh <serial끝자리> <hex>`.
+
+## 2노드 벤치 (2026-10-27)
+
+| 보드 (nEDBG 시리얼) | 클릭 | MAC (AT24MAC402) | PLCA | IP |
+|---|---|---|---|---|
+| …000469 (보통 ttyACM1) | 슬롯 3, LAN8651 B1 | fc:c2:3d:3a:0f:32 | **id 0 = 코디네이터**, count 8 | 192.168.100.70 |
+| …000464 (보통 ttyACM0) | 슬롯 3, LAN8651 B1 | fc:c2:3d:39:e9:b8 | id 1, count 8 | 192.168.100.71 |
+
+코디네이터는 혼자서도 `PST=1` (비컨 송신). 2선을 잇기 전 id 1 은 `PST=0` 이 정상.
 
 ## PLCA id 주의 (벤치 버스)
 

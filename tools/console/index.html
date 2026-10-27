@@ -42,7 +42,7 @@ td,th{border:1px solid var(--line);padding:4px 10px;text-align:center}
 </header>
 <main>
   <div class="panel"><svg id="topo" viewBox="0 0 1200 420"></svg>
-    <div class="legend">초록 = 코디네이터 비컨 들림(PST=1) · 주황 = 링크는 있으나 비컨 없음 · 빨강 = 응답 없음 · 점선 = 아직 없는 노드 · 버스 양 끝(ESP, 마지막 노드)만 종단</div>
+    <div class="legend">초록 = 코디네이터 비컨 들림(PST=1) · 주황 = 링크는 있으나 비컨 없음 · 빨강 = 응답 없음 · 점선 = 아직 없는 노드 · 종단은 버스 양 끝(바깥쪽 SAM)만 — 가운데 ESP 는 OFF</div>
   </div>
   <div class="panel" id="pingbox" style="margin-top:14px;display:none"><b>ping 결과</b><div id="pingres"></div></div>
   <div class="cards" id="cards"></div>
@@ -54,33 +54,32 @@ const col = b => (Date.now()/1000 - b.seen > 12) ? 'var(--bad)' : (b.pst ? 'var(
 const esc = s => String(s ?? '—').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
 function topo() {
+  // ESP in the middle of the bus (the coordinator and gateway), SAM nodes on both sides;
+  // only the two outermost nodes are terminated.
   const esp = S.filter(b => b.kind === 'esp'), sam = S.filter(b => b.kind === 'sam')
     .sort((a, b) => (a.plca_id ?? 99) - (b.plca_id ?? 99));
-  const nodes = [...sam, ...Array(planned).fill(null)];
-  const W = 1200, x0 = 300, x1 = W - 60, busY = 250, n = nodes.length;
-  const step = n > 1 ? (x1 - x0 - 120) / (n - 1) : 0;
+  const nodes = [...sam, ...Array(Math.max(0, 4 - sam.length)).fill(null)];
+  const half = Math.ceil(nodes.length / 2), left = nodes.slice(0, half), right = nodes.slice(half);
+  const W = 1200, cx0 = W / 2, busY = 250, x0 = 40, x1 = W - 40;
+  const e = esp[0], lanUp = e && e.lan && e.lan.startsWith('up');
   let g = '';
-  // PC
-  const e = esp[0];
-  const lanUp = e && e.lan && e.lan.startsWith('up');
-  g += box(40, 30, 200, 70, 'PC / 스위치', '192.168.100.51 (USB LAN)', lanUp ? 'var(--ok)' : 'var(--mute)', !lanUp);
-  g += `<line x1="140" y1="100" x2="140" y2="150" stroke="var(--mute)" stroke-width="2" ${e && e.lan && e.lan.startsWith('up') ? '' : 'stroke-dasharray="6 5"'}/>`;
-  g += `<text x="152" y="130" font-size="12" class="mute">100BASE-TX (W5500 RJ45) · ${lanUp ? '링크 업' : 'LAN 미연결'}${e?.mode === 'bridge' ? ' · L2 브리지 ↓ ' + esc(e.br_down) + ' · ↑ ' + esc(e.br_up) : ''}</text>`;
-  // ESP
-  if (e) g += box(40, 150, 200, 86, e.name, `PLCA ${e.plca_id}/${e.plca_count} ${e.plca_id === 0 ? '코디네이터' : ''}`, col(e), false, e.mode === 'bridge' ? '브리지 모드 · IP 없음' : `${esc(e.ip)} · ptp ${esc(e.ptp)}`);
-  else g += box(40, 150, 200, 86, 'ESP 게이트웨이', '연결 안 됨', 'var(--bad)', true);
-  // bus
-  g += `<line x1="240" y1="${busY}" x2="${x1}" y2="${busY}" stroke="var(--bus)" stroke-width="5"/>`;
-  g += `<line x1="240" y1="${busY}" x2="240" y2="193" stroke="var(--bus)" stroke-width="5"/>`;
-  g += `<text x="${x0}" y="${busY - 14}" font-size="13" class="mute">10BASE-T1S 2선 버스 · 10 Mb/s 공유 · PLCA</text>`;
-  g += term(244, busY);
-  nodes.forEach((b, i) => {
-    const cx = x0 + 60 + i * step, last = i === n - 1;
+  g += box(cx0 - 110, 10, 220, 62, 'PC / 스위치', '192.168.100.51 (USB LAN)', lanUp ? 'var(--ok)' : 'var(--mute)', !lanUp);
+  g += `<line x1="${cx0}" y1="72" x2="${cx0}" y2="110" stroke="var(--mute)" stroke-width="2" ${lanUp ? '' : 'stroke-dasharray="6 5"'}/>`;
+  g += `<text x="${cx0 + 10}" y="96" font-size="12" class="mute">100BASE-TX · ${lanUp ? '링크 업' : 'LAN 미연결'}${e?.mode === 'bridge' ? ' · 브리지 ↓ ' + esc(e.br_down) + ' · ↑ ' + esc(e.br_up) : ''}</text>`;
+  if (e) g += box(cx0 - 110, 110, 220, 92, e.name, `PLCA ${e.plca_id}/${e.plca_count} ${e.plca_id === 0 ? '코디네이터' : ''}`, col(e), false, e.mode === 'bridge' ? '브리지 모드 · IP 없음' : `${esc(e.ip)}`, '버스 중앙 · 종단 OFF');
+  else g += box(cx0 - 110, 110, 220, 92, 'ESP 게이트웨이', '연결 안 됨', 'var(--bad)', true);
+  g += `<line x1="${x0 + 60}" y1="${busY}" x2="${x1 - 60}" y2="${busY}" stroke="var(--bus)" stroke-width="5"/>`;
+  g += `<line x1="${cx0}" y1="202" x2="${cx0}" y2="${busY}" stroke="var(--bus)" stroke-width="5"/>`;
+  g += `<text x="${x0 + 70}" y="${busY - 12}" font-size="13" class="mute">10BASE-T1S 2선 버스 · 10 Mb/s 공유 · PLCA</text>`;
+  g += term(x0 + 60, busY) + term(x1 - 60, busY);
+  const place = (list, xa, xb) => list.forEach((b, i) => {
+    const cx = list.length > 1 ? xa + i * (xb - xa) / (list.length - 1) : (xa + xb) / 2;
     g += `<line x1="${cx}" y1="${busY}" x2="${cx}" y2="${busY + 40}" stroke="var(--bus)" stroke-width="3" ${b ? '' : 'stroke-dasharray="5 4"'}/>`;
     if (b) g += box(cx - 95, busY + 40, 190, 92, b.name, `PLCA ${b.plca_id ?? '?'} / ${b.plca_count ?? '?'}`, col(b), false, esc(b.ip), b.mac ? b.mac : '');
     else g += box(cx - 95, busY + 40, 190, 92, 'SAM E51 (예정)', 'LAN8651 클릭', 'var(--mute)', true);
-    if (last) g += term(x1 - 4, busY);
   });
+  place(left, x0 + 120, cx0 - 140);
+  place(right, cx0 + 140, x1 - 120);
   $('#topo').innerHTML = g;
 }
 function box(x, y, w, h, t1, t2, c, dashed, t3 = '', t4 = '') {

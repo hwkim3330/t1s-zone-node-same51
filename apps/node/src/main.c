@@ -20,9 +20,12 @@
 #include <zephyr/shell/shell.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/dfu/mcuboot.h>
+#include <zephyr/net/promiscuous.h>
 #include <zephyr/logging/log.h>
 #include "t1s_diag.h"
 #include "zone.h"
+#include <zephyr/init.h>
+#include "eth_lan865x_priv.h"
 
 LOG_MODULE_REGISTER(zone_node, LOG_LEVEL_INF);
 
@@ -168,6 +171,24 @@ static void set_mac_from_eeprom(void)
 		p.mac_address.addr[3], p.mac_address.addr[4], p.mac_address.addr[5], ret);
 }
 
+/*
+ * The click's EUI-48 into the driver before the network stack starts (POST_KERNEL 85: after the
+ * LAN865x driver at 80, before net_init at 90). The interface's link address, and with it gPTP's
+ * clock identity, are taken at net_init; without this every board would share the devicetree
+ * placeholder and its clock id. set_mac_from_eeprom() in main() still programs the chip.
+ */
+static int early_mac(void)
+{
+	uint8_t reg = AT24MAC402_EUI48_REG, m[6];
+	struct lan865x_data *ctx = t1s->data;
+
+	if (device_is_ready(i2c) && i2c_write_read(i2c, AT24MAC402_EUI_ADDR, &reg, 1, m, 6) == 0) {
+		memcpy(ctx->mac_address, m, 6);
+	}
+	return 0;
+}
+SYS_INIT(early_mac, POST_KERNEL, 85);
+
 static void print_status(const struct shell *sh)
 {
 	struct t1s_status st;
@@ -309,6 +330,10 @@ int main(void)
 #endif
 	set_mac_from_eeprom();
 	pick_identity();
+#ifdef CONFIG_NET_GPTP
+	/* gPTP's 01:80:C2:00:00:0E is not in the LAN8651's address filter */
+	LOG_INF("promiscuous for gPTP (%d)", net_promisc_mode_on(iface));
+#endif
 	int ret = apply_plca();
 
 	LOG_INF("PLCA node %u/%u applied (%d)", plca_cfg.t1s_param.plca.node_id,

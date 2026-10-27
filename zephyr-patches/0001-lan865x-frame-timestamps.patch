@@ -1,8 +1,176 @@
 diff --git a/drivers/ethernet/eth_lan865x.c b/drivers/ethernet/eth_lan865x.c
-index 5a588914b..a33942d5d 100644
+index 5a588914b..77e498640 100644
 --- a/drivers/ethernet/eth_lan865x.c
 +++ b/drivers/ethernet/eth_lan865x.c
-@@ -410,6 +410,25 @@ static void lan865x_read_chunks(const struct device *dev)
+@@ -51,10 +51,166 @@ static void lan865x_iface_init(struct net_if *iface)
+ 	ctx->iface_initialized = true;
+ }
+ 
++
++/*
++ * LOCAL PATCH (t1s-zone-node): the LAN8651's 1588 wall clock (TSU, 25 MHz, 40 ns ticks) as a
++ * Zephyr PTP clock, and frame stamps for gPTP. Built with LAN865X_FRAME_TIMESTAMPS + CONFIG_PTP_CLOCK.
++ */
++#if defined(LAN865X_FRAME_TIMESTAMPS) && defined(CONFIG_PTP_CLOCK)
++#define LAN865X_PTP 1
++#include <zephyr/drivers/ptp_clock.h>
++#include <zephyr/net/ptp_time.h>
++
++#define LAN865x_MAC_TISUBN MMS_REG(0x1, 0x06F)
++#define LAN865x_MAC_TSH    MMS_REG(0x1, 0x070)
++#define LAN865x_MAC_TSL    MMS_REG(0x1, 0x074)
++#define LAN865x_MAC_TN     MMS_REG(0x1, 0x075)
++#define LAN865x_MAC_TA     MMS_REG(0x1, 0x076)
++#define LAN865x_MAC_TI     MMS_REG(0x1, 0x077)
++
++struct lan865x_ptp {
++	const struct device *eth;
++	double ratio; /* accumulated rate_adjust, 1.0 = nominal 40 ns per tick */
++};
++static struct lan865x_ptp lan865x_ptp_0;
++
++static int lan865x_ptp_reg(const struct device *eth, bool wr, uint32_t reg, uint32_t *v)
++{
++	struct lan865x_data *ctx = eth->data;
++	int ret;
++
++	if (k_sem_take(&ctx->tx_rx_sem, K_MSEC(100)) != 0) {
++		return -EBUSY;
++	}
++	ret = wr ? oa_tc6_reg_write(ctx->tc6, reg, *v) : oa_tc6_reg_read(ctx->tc6, reg, v);
++	k_sem_give(&ctx->tx_rx_sem);
++	return ret;
++}
++
++static int lan865x_ptp_set(const struct device *dev, struct net_ptp_time *tm)
++{
++	struct lan865x_ptp *p = dev->data;
++	uint32_t hi = (uint32_t)(tm->second >> 32) & 0xffff, sl = (uint32_t)tm->second,
++		 ns = tm->nanosecond;
++
++	return lan865x_ptp_reg(p->eth, true, LAN865x_MAC_TSH, &hi) |
++	       lan865x_ptp_reg(p->eth, true, LAN865x_MAC_TN, &ns) |
++	       lan865x_ptp_reg(p->eth, true, LAN865x_MAC_TSL, &sl);
++}
++
++static int lan865x_ptp_get(const struct device *dev, struct net_ptp_time *tm)
++{
++	struct lan865x_ptp *p = dev->data;
++	uint32_t ns = 0, sl = 0, sl2 = 0;
++	/* TN first, then TSL (the order the TSU latches); re-read TSL across a second wrap */
++	int ret = lan865x_ptp_reg(p->eth, false, LAN865x_MAC_TN, &ns) |
++		  lan865x_ptp_reg(p->eth, false, LAN865x_MAC_TSL, &sl);
++
++	lan865x_ptp_reg(p->eth, false, LAN865x_MAC_TSL, &sl2);
++	if (sl2 != sl && ns < NSEC_PER_SEC / 2) {
++		sl = sl2;
++	}
++	tm->second = sl;
++	tm->nanosecond = ns;
++	return ret;
++}
++
++static int lan865x_ptp_adjust(const struct device *dev, int increment)
++{
++	struct lan865x_ptp *p = dev->data;
++
++	if (increment <= -(int)NSEC_PER_SEC || increment >= (int)NSEC_PER_SEC) {
++		return -EINVAL;
++	}
++	uint32_t v = (increment < 0 ? BIT(31) : 0) |
++		     ((uint32_t)(increment < 0 ? -increment : increment) & 0x3fffffff);
++
++	return lan865x_ptp_reg(p->eth, true, LAN865x_MAC_TA, &v);
++}
++
++static int lan865x_ptp_rate_adjust(const struct device *dev, double ratio)
++{
++	struct lan865x_ptp *p = dev->data;
++
++	if (ratio == 1.0) {
++		return 0;
++	}
++	double r = p->ratio * ratio;
++
++	if (r < 0.999 || r > 1.001) { /* +-1000 ppm */
++		return -EINVAL;
++	}
++	p->ratio = r;
++	/* increment = 40 ns x ratio in 2^-24 ns: TISUBN (low byte in 31:24, high 16 in 15:0) before TI */
++	uint64_t inc = (uint64_t)(40.0 * 16777216.0 * r + 0.5);
++	uint32_t ti = inc >> 24, sub = inc & 0xffffff;
++	uint32_t subv = (sub & 0xff) << 24 | ((sub >> 8) & 0xffff);
++
++	return lan865x_ptp_reg(p->eth, true, LAN865x_MAC_TISUBN, &subv) |
++	       lan865x_ptp_reg(p->eth, true, LAN865x_MAC_TI, &ti);
++}
++
++static const struct ptp_clock_driver_api lan865x_ptp_api = {
++	.set = lan865x_ptp_set,
++	.get = lan865x_ptp_get,
++	.adjust = lan865x_ptp_adjust,
++	.rate_adjust = lan865x_ptp_rate_adjust,
++};
++
++static int lan865x_ptp_init(const struct device *dev)
++{
++	struct lan865x_ptp *p = dev->data;
++
++	p->eth = DEVICE_DT_INST_GET(0);
++	p->ratio = 1.0;
++	return 0;
++}
++
++DEVICE_DEFINE(lan865x_ptp_clock_0, PTP_CLOCK_NAME, lan865x_ptp_init, NULL, &lan865x_ptp_0, NULL,
++	      POST_KERNEL, CONFIG_PTP_CLOCK_INIT_PRIORITY, &lan865x_ptp_api);
++
++static const struct device *lan865x_get_ptp_clock(const struct device *dev)
++{
++	ARG_UNUSED(dev);
++	return DEVICE_GET(lan865x_ptp_clock_0);
++}
++
++/* The TSU counts and the PHY's packet matcher stamps every frame at the SFD (out of reset it is
++ * off and matches gPTP Sync only). Written with the chip configuration after every reset. */
++static void lan865x_ptp_chip_setup(struct oa_tc6 *tc6)
++{
++	static const uint16_t mm[][2] = {{0x43, 0x00ff}, {0x44, 0xffff}, {0x45, 0},
++					 {0x53, 0x00ff}, {0x54, 0xffff}, {0x55, 0},
++					 {0x40, 2}, {0x50, 2}}; /* TXMCTL.TXME, RXMCTL.RXME */
++
++	oa_tc6_reg_write(tc6, LAN865x_MAC_TI, 40);
++	for (size_t i = 0; i < ARRAY_SIZE(mm); i++) {
++		oa_tc6_reg_write(tc6, MMS_REG(0x4, mm[i][0]), mm[i][1]);
++	}
++}
++
++static bool lan865x_is_ptp_frame(struct net_pkt *pkt)
++{
++	uint8_t h[14];
++
++	net_pkt_cursor_init(pkt);
++	if (net_pkt_read(pkt, h, sizeof(h))) {
++		net_pkt_cursor_init(pkt);
++		return false;
++	}
++	net_pkt_cursor_init(pkt);
++	return (h[12] << 8 | h[13]) == NET_ETH_PTYPE_PTP;
++}
++#endif /* LAN865X_FRAME_TIMESTAMPS && CONFIG_PTP_CLOCK */
++
+ static enum ethernet_hw_caps lan865x_port_get_capabilities(const struct device *dev)
+ {
+ 	ARG_UNUSED(dev);
+-	return ETHERNET_LINK_10BASE_T | ETHERNET_PROMISC_MODE;
++	return ETHERNET_LINK_10BASE_T | ETHERNET_PROMISC_MODE
++#ifdef LAN865X_PTP
++	       | ETHERNET_PTP
++#endif
++		;
+ }
+ 
+ static int lan865x_gpio_reset(const struct device *dev);
+@@ -410,6 +566,33 @@ static void lan865x_read_chunks(const struct device *dev)
  		return;
  	}
  
@@ -23,23 +191,99 @@ index 5a588914b..a33942d5d 100644
 +			oa_tc6_rx_ts_cb(pkt, ts);
 +			net_pkt_cursor_init(pkt);
 +		}
++#ifdef LAN865X_PTP
++		pkt->timestamp.second = ts >> 32;
++		pkt->timestamp.nanosecond = (uint32_t)ts;
++		net_pkt_set_rx_timestamping(pkt, true);
++		if (lan865x_is_ptp_frame(pkt)) {
++			net_pkt_set_priority(pkt, NET_PRIORITY_CA);
++		}
++#endif
 +	}
 +
  	/* Feed buffer frame to IP stack */
  	ret = net_recv_data(ctx->iface, pkt);
  	if (ret < 0) {
-@@ -435,6 +454,9 @@ static void lan865x_int_thread(const struct device *dev)
+@@ -435,6 +618,12 @@ static void lan865x_int_thread(const struct device *dev)
  				lan865x_default_config(dev, ctx->silicon_rev);
  				oa_tc6_reg_read(tc6, OA_CONFIG0, &val);
  				val |= OA_CONFIG0_SYNC | OA_CONFIG0_RFA_ZARFE;
 +#ifdef LAN865X_FRAME_TIMESTAMPS /* LOCAL PATCH: only latches together with SYNC */
 +				val |= OA_CONFIG0_FTSE | OA_CONFIG0_FTSS;
 +#endif
++#ifdef LAN865X_PTP
++				lan865x_ptp_chip_setup(tc6);
++#endif
  				oa_tc6_reg_write(tc6, OA_CONFIG0, val);
  				lan865x_mac_rxtx_control(dev, LAN865x_MAC_TXRX_ON);
  
+@@ -545,8 +734,18 @@ static int lan865x_port_send(const struct device *dev, struct net_pkt *pkt)
+ 	struct oa_tc6 *tc6 = ctx->tc6;
+ 	int ret;
+ 
++#ifdef LAN865X_PTP
++	bool want_ts = lan865x_is_ptp_frame(pkt) || net_pkt_is_tx_timestamping(pkt);
++#endif
++
+ 	k_sem_take(&ctx->tx_rx_sem, K_FOREVER);
++#ifdef LAN865X_PTP
++	tc6->want_ts_next = want_ts;
++#endif
+ 	ret = oa_tc6_send_chunks(tc6, pkt);
++#ifdef LAN865X_PTP
++	tc6->want_ts_next = false;
++#endif
+ 
+ 	/* Check if rca > 0 during half-duplex TX transmission */
+ 	if (tc6->rca > 0) {
+@@ -560,10 +759,45 @@ static int lan865x_port_send(const struct device *dev, struct net_pkt *pkt)
+ 		return ret;
+ 	}
+ 
++#ifdef LAN865X_PTP
++	/* The frame leaves at this node's next PLCA opportunity: wait for its egress stamp. */
++	if (want_ts) {
++		pkt->timestamp.second = UINT64_MAX;
++		pkt->timestamp.nanosecond = UINT32_MAX;
++		for (int i = 0; i < 200; i++) {
++			uint32_t st = 0, hi = 0, lo = 0;
++
++			if (tc6->tx_ts_valid) {
++				pkt->timestamp.second = tc6->tx_ts >> 32;
++				pkt->timestamp.nanosecond = (uint32_t)tc6->tx_ts;
++				tc6->tx_ts_valid = false;
++				break;
++			}
++			k_sem_take(&ctx->tx_rx_sem, K_FOREVER);
++			oa_tc6_reg_read(tc6, OA_STATUS0, &st);
++			if (st & OA_STATUS0_TTSCAA) {
++				oa_tc6_reg_read(tc6, OA_TTSCAH, &hi);
++				oa_tc6_reg_read(tc6, OA_TTSCAL, &lo);
++				oa_tc6_reg_write(tc6, OA_STATUS0, OA_STATUS0_TTSCAA);
++				k_sem_give(&ctx->tx_rx_sem);
++				pkt->timestamp.second = hi;
++				pkt->timestamp.nanosecond = lo;
++				break;
++			}
++			k_sem_give(&ctx->tx_rx_sem);
++			k_usleep(100);
++		}
++		net_if_add_tx_timestamp(pkt);
++	}
++#endif
++
+ 	return 0;
+ }
+ 
+ static const struct ethernet_api lan865x_api_func = {
++#ifdef LAN865X_PTP
++	.get_ptp_clock = lan865x_get_ptp_clock,
++#endif
+ 	.iface_api.init = lan865x_iface_init,
+ 	.get_capabilities = lan865x_port_get_capabilities,
+ 	.set_config = lan865x_set_config,
 diff --git a/drivers/ethernet/oa_tc6.c b/drivers/ethernet/oa_tc6.c
-index 2b1e017f0..ce3b5fab8 100644
+index 2b1e017f0..ee40764cc 100644
 --- a/drivers/ethernet/oa_tc6.c
 +++ b/drivers/ethernet/oa_tc6.c
 @@ -167,8 +167,12 @@ int oa_tc6_set_protected_ctrl(struct oa_tc6 *tc6, bool prote)
@@ -51,7 +295,7 @@ index 2b1e017f0..ce3b5fab8 100644
 +
  int oa_tc6_send_chunks(struct oa_tc6 *tc6, struct net_pkt *pkt)
  {
-+	bool want_ts = oa_tc6_tx_ts_want && oa_tc6_tx_ts_want(pkt); /* LOCAL PATCH */
++	bool want_ts = tc6->want_ts_next || (oa_tc6_tx_ts_want && oa_tc6_tx_ts_want(pkt)); /* LOCAL PATCH */
  	uint16_t len = net_pkt_get_len(pkt);
  	uint8_t oa_tx[tc6->cps];
  	uint32_t hdr, ftr;
@@ -110,7 +354,7 @@ index 2b1e017f0..ce3b5fab8 100644
  		}
  
 diff --git a/drivers/ethernet/oa_tc6.h b/drivers/ethernet/oa_tc6.h
-index 0918e1382..8ab000043 100644
+index 0918e1382..26762ab37 100644
 --- a/drivers/ethernet/oa_tc6.h
 +++ b/drivers/ethernet/oa_tc6.h
 @@ -23,6 +23,12 @@
@@ -143,7 +387,7 @@ index 0918e1382..8ab000043 100644
  #define OA_DATA_FTR_TXC		      GENMASK(5, 1)
  #define OA_DATA_FTR_P		      BIT(0)
  
-@@ -110,8 +119,27 @@ struct oa_tc6 {
+@@ -110,8 +119,29 @@ struct oa_tc6 {
  
  	/** Pointer to network buffer concatenated from received chunk */
  	struct net_buf *concat_buf;
@@ -156,6 +400,8 @@ index 0918e1382..8ab000043 100644
 +	/** egress stamp of the last frame sent with TSC = A (seconds << 32 | ns), valid when set */
 +	volatile uint64_t tx_ts;
 +	volatile bool tx_ts_valid;
++	/** the driver itself wants the next frame's egress stamp (gPTP) */
++	bool want_ts_next;
  };
  
 +/*

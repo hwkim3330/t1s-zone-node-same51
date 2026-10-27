@@ -177,6 +177,12 @@ Zephyr 의 LAN865x 드라이버엔 타임스탬프가 없어 **`zephyr-patches/0
 
 `ptp on` = TSU 증분 40 ns + PHY 패킷 매처를 모든 프레임에(MMS4 0x43–0x55, TXMCTL/RXMCTL) + 드라이버 훅. 응답 서버(5007)는 항상 돈다.
 
+**표준 gPTP (IEEE 802.1AS, Zephyr 내장 스택)**: 같은 패치가 LAN8651 TSU 를 Zephyr PTP 클록 장치(`set/get/adjust/rate_adjust`, TI+TISUBN 2^-24 ns)로
+등록하고, 수신 프레임에 `pkt->timestamp`, 0x88F7 프레임·`tx_timestamping` 요청에는 송신 캡처 → `net_if_add_tx_timestamp`, 칩 리셋마다 TSU 증분·패킷 매처
+설정, `ETHERNET_PTP` 능력을 붙인다. 앱은 `CONFIG_NET_GPTP` + promiscuous(gPTP 의 01:80:C2:00:00:0E 는 MAC 필터에 없음). 셸 `net gptp`, `net gptp 1`.
+gPTP 클록 ID 는 net_init 때 링크 주소에서 만들어지므로 EEPROM MAC 을 `SYS_INIT(POST_KERNEL 85)` 에서 드라이버에 넣는다(안 하면 모든 보드가
+DT 자리표시 MAC → 같은 클록 ID). 혼자일 땐 Pdelay 응답이 없어 포트 DISABLED 가 정상.
+
 검증(2026-10-27, 보드 1대): FTSE/FTSS 래치 확인(OA_CONFIG0 0x90e6), 수신 스탬프 제거 후에도 ping·Zenoh 정상. **SAM↔SAM 하드웨어 양끝 측정은
 두 번째 보드에 MCUboot 를 올린 뒤** — ESP README 가 "다음 단계"로 적어 둔 바로 그 구성.
 

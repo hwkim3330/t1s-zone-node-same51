@@ -144,8 +144,24 @@ class Board:
         return [l for t, l in self.lines if t >= t0 and not l.startswith(('stat: ', 't1s: ', 'net: '))]
 
 
-boards = [Board(p) for p in sorted(glob.glob('/dev/serial/by-id/*'))
-          if 'nEDBG' in p or 'Espressif' in p]
+boards = []
+
+
+def scan():
+    """Boards plugged in later (a new node, or one that was away while another was flashed) join the page."""
+    while True:
+        known = {b.path for b in boards}
+        for p in sorted(glob.glob('/dev/serial/by-id/*')):
+            if ('nEDBG' in p or 'Espressif' in p) and p not in known:
+                try:
+                    boards.append(Board(p))
+                except Exception:
+                    pass
+        time.sleep(3)
+
+
+threading.Thread(target=scan, daemon=True).start()
+time.sleep(1)
 
 
 class H(BaseHTTPRequestHandler):

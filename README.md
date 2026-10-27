@@ -130,12 +130,28 @@ LED0: 켜짐 고정 = PLCA 비컨 수신(버스 동작), 1 Hz 깜빡임 = 코디
    프로브를 고르면 `*** buffer overflow detected ***` 로 abort 한다(usb_bulk 백엔드는 nEDBG 를 못 찾음). 우회: 다른 보드의 USB 를 잠시
    숨기고 단독으로 굽는다 — `tools/flash_one.sh <serial끝자리> <hex>`.
 
+## 슬롯 계획
+
+AC164162 베이스의 **Xplained Pro 확장 헤더는 슬롯 2·3 과 핀을 공유**한다(DS50002839B p.5: "The Xplained Pro extension header is shared with
+mikroBUS socket 2 and 3"). 슬롯 1 은 UART 만 슬롯 3 과 같고(T1S 클릭은 UART 안 씀) 헤더와 겹치지 않는다. 하드웨어 PWM 은 슬롯 1·2 뿐(TCC0 ch2/ch3).
+
+| 배치 | 슬롯 1 | 슬롯 2 | 슬롯 3 | 빌드 |
+|---|---|---|---|---|
+| 현재(기본) | 램프(PWM, 미등 감광 가능) | 모터(PWM) | **T1S** | 옵션 없음 |
+| 확장 헤더를 쓸 때 | **T1S** (헤더와 안 겹침) | 모터(PWM) | 램프(GPIO) | `-Dnode_T1S_SLOT=1 -Dnode_LAMP_SLOT=3` |
+
+클릭을 옮기면 그 보드는 USB 로 한 번 다시 구워야 한다(옛 이미지는 새 슬롯의 T1S 를 못 찾아 네트워크가 없다). 같은 슬롯을 둘 다 주면 빌드가 멈춘다.
+슬롯 1 T1S 오버레이는 핀맵상으론 맞지만 **실기 미검증**(2026-10-27 현재 두 보드 모두 슬롯 3).
+
+**sysbuild 함정**: MCUboot 빌드(`--sysbuild`)에선 이 앱 이미지의 옵션을 `-Dnode_<VAR>` 로 줘야 한다. 그냥 `-DT1S_SLOT=1` 은 sysbuild 에만
+머물고 앱엔 안 간다(조용히 기본값 3 으로 빌드됨). CMakeLists 가 sysbuild 캐시에서 `node_T1S_SLOT`/`node_LAMP_SLOT` 을 직접 읽는다.
+
 ## 네트워크 펌웨어 업데이트 (MCUboot + mcumgr SMP/UDP)
 
 보드마다 **USB 로 한 번만** MCUboot + 앱을 굽고, 그 뒤로는 T1S 너머로 올린다(USB 불필요):
 
 ```
-nice west build -p --sysbuild -b same51_cnano -d $R/build/node-v2 $R/apps/node -- -DBOARD_ROOT=$R -DT1S_SLOT=3 \
+nice west build -p --sysbuild -b same51_cnano -d $R/build/node-v2 $R/apps/node -- -DBOARD_ROOT=$R \
     -Dnode_CONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION=\"0.1.0+1\"
 # 처음 한 번(USB, 그 보드만 꽂힌 상태):
 openocd -f boards/microchip/same51_cnano/support/openocd.cfg -c init -c 'reset init' \

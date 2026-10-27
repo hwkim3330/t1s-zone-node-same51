@@ -1,0 +1,26 @@
+/*
+ * Zone lamps on mikroBUS slot 3 -- the same four outputs as zone-lamps-slot1.overlay, for a board
+ * whose T1S click sits in slot 1 (see README "Slot plan"). Plain push-pull, active high, 3.3 V.
+ *   left  AN  PB08 | right RST PB06 | brake PWM PB09 (TC4: GPIO only, no Zephyr PWM) | reverse INT PB07
+ */
+/ {
+	zone_lamps {
+		compatible = "gpio-leds";
+		lamp_left: lamp_left {
+			gpios = <&mikrobus_3 0 GPIO_ACTIVE_HIGH>;
+			label = "left indicator";
+		};
+		lamp_right: lamp_right {
+			gpios = <&mikrobus_3 1 GPIO_ACTIVE_HIGH>;
+			label = "right indicator";
+		};
+		lamp_brake: lamp_brake {
+			gpios = <&mikrobus_3 6 GPIO_ACTIVE_HIGH>;
+			label = "brake";
+		};
+		lamp_reverse: lamp_reverse {
+			gpios = <&mikrobus_3 7 GPIO_ACTIVE_HIGH>;
+			label = "reverse";
+		};
+	};
+};

@@ -4,6 +4,28 @@ cmake_minimum_required(VERSION 3.20.0)
 # Out-of-tree board (boards/microchip/same51_cnano)
 list(APPEND BOARD_ROOT ${CMAKE_CURRENT_LIST_DIR}/../..)
 
+# In a sysbuild (MCUboot) an option for this image is given as -D<image>_<VAR> (here node_T1S_SLOT,
+# node_LAMP_SLOT) and reaches the image only through the sysbuild cache file; zephyr_get() would read it,
+# but it exists only after find_package(Zephyr), and the overlays must be chosen before that.
+function(sysbuild_option var)
+  if(DEFINED SYSBUILD_CACHE AND EXISTS "${SYSBUILD_CACHE}")
+    file(STRINGS "${SYSBUILD_CACHE}" lines)
+    set(name "")
+    foreach(l IN LISTS lines)
+      if(l MATCHES "^SYSBUILD_NAME:[^=]*=(.*)$")
+        set(name "${CMAKE_MATCH_1}")
+      endif()
+    endforeach()
+    foreach(l IN LISTS lines)
+      if(name AND l MATCHES "^${name}_${var}:[^=]*=(.*)$")
+        set(${var} "${CMAKE_MATCH_1}" CACHE STRING "" FORCE)
+      endif()
+    endforeach()
+  endif()
+endfunction()
+sysbuild_option(T1S_SLOT)
+sysbuild_option(LAMP_SLOT)
+
 # Which mikroBUS slot holds the Two-Wire ETH click (found by apps/probe).
 set(T1S_SLOT 3 CACHE STRING "mikroBUS slot (1-3) of the MIKROE-5543 click")
 list(APPEND EXTRA_DTC_OVERLAY_FILE
@@ -15,6 +37,9 @@ list(APPEND ZEPHYR_EXTRA_MODULES ${ZENOH_PICO_DIR})
 
 # Zone lamp outputs (left/right/brake/reverse) on a free mikroBUS slot; 0 = none
 set(LAMP_SLOT 1 CACHE STRING "mikroBUS slot for the zone lamp outputs (0 = none)")
+if(LAMP_SLOT STREQUAL T1S_SLOT)
+  message(FATAL_ERROR "LAMP_SLOT ${LAMP_SLOT} is the T1S click's slot: pick another (README: Slot plan)")
+endif()
 if(NOT LAMP_SLOT STREQUAL "0")
   list(APPEND EXTRA_DTC_OVERLAY_FILE
        ${CMAKE_CURRENT_LIST_DIR}/../../dts/zone-lamps-slot${LAMP_SLOT}.overlay)

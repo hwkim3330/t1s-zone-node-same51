@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+cmake_minimum_required(VERSION 3.20.0)
+
+# Out-of-tree board (boards/microchip/same51_cnano)
+list(APPEND BOARD_ROOT ${CMAKE_CURRENT_LIST_DIR}/../..)
+
+# Which mikroBUS slot holds the Two-Wire ETH click (found by apps/probe).
+set(T1S_SLOT 3 CACHE STRING "mikroBUS slot (1-3) of the MIKROE-5543 click")
+list(APPEND EXTRA_DTC_OVERLAY_FILE
+     ${CMAKE_CURRENT_LIST_DIR}/../../dts/two-wire-eth-click-slot${T1S_SLOT}.overlay)
+
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+project(t1s_zone_node)
+
+target_sources(app PRIVATE src/main.c src/t1s_diag.c)
+# t1s_diag.c reads PLCA status through the in-tree driver's OA TC6 helpers
+target_include_directories(app PRIVATE
+  ${ZEPHYR_BASE}/drivers/ethernet
+  ${ZEPHYR_BASE}/subsys/net/l2)

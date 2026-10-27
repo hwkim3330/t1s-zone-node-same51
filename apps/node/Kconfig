@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+mainmenu "T1S zone node"
+
+config APP_PLCA_NODE_ID
+	int "PLCA node id (0 = coordinator)"
+	range 0 254
+	default 1
+
+config APP_PLCA_NODE_COUNT
+	int "PLCA node count (used only by the coordinator)"
+	range 1 255
+	default 8
+
+config APP_PLCA_TO_TIMER
+	int "PLCA TO timer (bit times)"
+	default 32
+
+config APP_PLCA_BURST_COUNT
+	int "PLCA max burst count"
+	default 0
+
+config APP_PLCA_BURST_TIMER
+	int "PLCA burst timer"
+	default 128
+
+config APP_STATUS_PERIOD_S
+	int "Seconds between status lines on the console (0 = off)"
+	default 5
+
+source "Kconfig.zephyr"

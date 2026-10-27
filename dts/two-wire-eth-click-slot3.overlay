@@ -1,0 +1,29 @@
+/*
+ * MIKROE-5543 Two-Wire ETH Click (LAN8651B1, 10BASE-T1S MAC-PHY) in
+ * mikroBUS slot 3 of the AC164162 base.
+ * Click pinout (MIKROE-5543 datasheet): RST = RST#, CS = CS#, SCK/MISO/MOSI = SPI,
+ * INT = IRQ# (active low), PWM = WI, AN = INH, I2C = AT24MAC402 (EUI-48).
+ * SPI child reg = cs-gpios index of the board's shared SPI = slot - 1.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+&mikrobus_3_spi {
+	t1s0: lan865x@2 {
+		compatible = "microchip,lan865x";
+		reg = <2>;
+		/* SERCOM1 on 120 MHz GCLK0: BAUD 3 -> 120 / (2 * (3 + 1)) = 15 MHz.
+		 * 15 MHz leaves margin over the 10.6 Mb/s a full T1S stream needs. */
+		spi-max-frequency = <15000000>;
+		int-gpios = <&mikrobus_3 7 GPIO_ACTIVE_LOW>;
+		rst-gpios = <&mikrobus_3 1 GPIO_ACTIVE_LOW>;
+		/* placeholder; the app replaces it with the click's AT24MAC402 EUI-48 */
+		local-mac-address = [02 00 5e 51 00 01];
+		/* Defaults; the app re-applies PLCA from Kconfig/shell at run time. */
+		plca-enable;
+		plca-node-id = <1>;
+		plca-node-count = <8>;
+		plca-burst-count = <0>;
+		plca-burst-timer = <0x80>;
+		plca-to-timer = <0x20>;
+		status = "okay";
+	};
+};

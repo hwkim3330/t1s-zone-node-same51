@@ -13,6 +13,13 @@ list(APPEND EXTRA_DTC_OVERLAY_FILE
 set(ZENOH_PICO_DIR $ENV{HOME}/esp32-t1s-bridge/vendor/zenoh-pico CACHE PATH "zenoh-pico source")
 list(APPEND ZEPHYR_EXTRA_MODULES ${ZENOH_PICO_DIR})
 
+# Zone lamp outputs (left/right/brake/reverse) on a free mikroBUS slot; 0 = none
+set(LAMP_SLOT 1 CACHE STRING "mikroBUS slot for the zone lamp outputs (0 = none)")
+if(NOT LAMP_SLOT STREQUAL "0")
+  list(APPEND EXTRA_DTC_OVERLAY_FILE
+       ${CMAKE_CURRENT_LIST_DIR}/../../dts/zone-lamps-slot${LAMP_SLOT}.overlay)
+endif()
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(t1s_zone_node)
 
@@ -23,7 +30,7 @@ if(CONFIG_APP_ZENOH)
   # the module does not run zenoh-pico's configure step; this is its config.h
   zephyr_include_directories(${CMAKE_CURRENT_LIST_DIR}/zenoh-config)
   zephyr_compile_definitions(ZENOH_LOG_WARN)
-  target_sources(app PRIVATE src/zone_zenoh.c)
+  target_sources(app PRIVATE src/zone_zenoh.c src/zone_lamps.c)
 endif()
 # t1s_diag.c reads PLCA status through the in-tree driver's OA TC6 helpers
 target_include_directories(app PRIVATE

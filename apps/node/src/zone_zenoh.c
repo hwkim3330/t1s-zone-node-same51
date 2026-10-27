@@ -76,6 +76,26 @@ static void on_cmd(z_loaned_sample_t *sample, void *arg)
 	}
 }
 
+static void on_vehicle(z_loaned_sample_t *sample, void *arg)
+{
+	z_view_string_t ks;
+	char key[96];
+	uint8_t v[8];
+
+	z_keyexpr_as_view_string(z_sample_keyexpr(sample), &ks);
+	size_t kl = MIN(z_string_len(z_view_string_loan(&ks)), sizeof(key) - 1);
+
+	memcpy(key, z_string_data(z_view_string_loan(&ks)), kl);
+	key[kl] = 0;
+	if (kl <= 8) {
+		return;
+	}
+	z_bytes_reader_t r = z_bytes_get_reader(z_sample_payload(sample));
+	size_t n = z_bytes_reader_read(&r, v, sizeof(v));
+
+	zone_lamps_on_vss(key + 8, v, n); /* after "vehicle/" */
+}
+
 static void zenoh_thread(void *a, void *b, void *c)
 {
 	char ke[40], msg[128];
@@ -102,8 +122,8 @@ static void zenoh_thread(void *a, void *b, void *c)
 
 		uint8_t id = zone_plca_id();
 		z_owned_publisher_t hello;
-		z_owned_subscriber_t sub1, sub2;
-		z_owned_closure_sample_t c1, c2;
+		z_owned_subscriber_t sub1, sub2, sub3;
+		z_owned_closure_sample_t c1, c2, c3;
 		z_view_keyexpr_t k;
 
 		snprintf(ke, sizeof(ke), "t1s/sam%u/hello", id);
@@ -119,6 +139,11 @@ static void zenoh_thread(void *a, void *b, void *c)
 		z_view_keyexpr_from_str_unchecked(&k, "t1s/all/cmd");
 		z_closure(&c2, on_cmd, NULL, NULL);
 		z_declare_subscriber(z_session_loan(&s), &sub2, z_view_keyexpr_loan(&k), z_closure_sample_move(&c2), NULL);
+
+		/* the vehicle API: body lights, gear, speed (liveness) */
+		z_view_keyexpr_from_str_unchecked(&k, "vehicle/**");
+		z_closure(&c3, on_vehicle, NULL, NULL);
+		z_declare_subscriber(z_session_loan(&s), &sub3, z_view_keyexpr_loan(&k), z_closure_sample_move(&c3), NULL);
 
 		connected = true;
 		LOG_INF("zenoh: connected to %s as t1s/sam%u", locator, id);
@@ -143,6 +168,7 @@ static void zenoh_thread(void *a, void *b, void *c)
 		ack_ok = false;
 		z_undeclare_subscriber(z_subscriber_move(&sub1));
 		z_undeclare_subscriber(z_subscriber_move(&sub2));
+		z_undeclare_subscriber(z_subscriber_move(&sub3));
 		z_undeclare_publisher(z_publisher_move(&hello));
 		z_undeclare_publisher(z_publisher_move(&pub_ack));
 		z_session_drop(z_session_move(&s));

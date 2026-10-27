@@ -390,7 +390,9 @@ int main(void)
 			gpio_pin_toggle_dt(&led);
 			break;
 		default:
-			if (pst) {
+			if (zone_lamp_led >= 0) { /* an indicator is on: LED0 blinks with it */
+				gpio_pin_set_dt(&led, zone_lamp_led);
+			} else if (pst) {
 				gpio_pin_set_dt(&led, 1);
 			} else {
 				gpio_pin_toggle_dt(&led);
@@ -400,7 +402,7 @@ int main(void)
 			print_status(NULL);
 			next = k_uptime_get() + CONFIG_APP_STATUS_PERIOD_S * 1000;
 		}
-		k_msleep(500);
+		k_msleep(zone_lamp_led >= 0 ? 20 : 500);
 	}
 	return 0;
 }

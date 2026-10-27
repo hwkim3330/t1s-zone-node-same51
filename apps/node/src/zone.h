@@ -11,3 +11,7 @@ extern volatile int zone_led_mode;
 bool zone_bus_up(void);              /* PLCA active: the coordinator's beacons are heard */
 uint8_t zone_plca_id(void);
 void zone_ip_str(char *buf, size_t len);
+
+/* zone_lamps.c: the ZoneLink VSS keys (k = key below "vehicle/") and its LED0 request (-1 none) */
+void zone_lamps_on_vss(const char *k, const uint8_t *b, size_t n);
+extern volatile int zone_lamp_led;

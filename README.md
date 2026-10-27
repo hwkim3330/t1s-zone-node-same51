@@ -168,6 +168,22 @@ EVB 가 없으면 재시작 루프 — 건드리지 않았다).
 queue"), POSIX mutex 32 / cond 16(기본 ~5 → zenoh 의 `System error: 12` 후 22 반복), 모듈이 안 만들어 주는 `config.h` 를 `apps/node/zenoh-config/`
 에 둠. zenoh 재접속 루프가 버퍼를 잡아먹은 이미지에는 SMP 업로드도 안 들어가 → `kernel reboot cold` 직후 올리면 된다.
 
+## 차량 API → 존 램프 (CARLA/Autoware 연동)
+
+```
+Autoware(aw-carla) ─ROS 2─ PLEOS 게이트웨이 :8780 (/io WS, /vss) ─ zonelink.py ─ zenohd ─ ESP 브리지 ─ T1S ─ SAM
+python3 ~/korea-autoware-sim/sdv/zonelink.py --api http://10.42.0.90:8780 --router tcp/192.168.100.51:7448
+```
+
+`zonelink.py` 는 원래 웹 시뮬용 사이드카지만 PLEOS 게이트웨이가 같은 `/io`·`/vss` 형식을 내므로 그대로 붙는다. 노드는 `vehicle/**` 를 구독:
+방향지시등 좌/우, 비상등, 브레이크, 후진, 기어, 속도(생존 신호, 3 s 끊기면 램프 소등). 셸 `lamps`.
+**출력 핀(미리 배정, `dts/zone-lamps-slot1.overlay`, `-DLAMP_SLOT=1`, 0 = 없음)**: 좌 AN PA02 · 우 RST PA07 · 브레이크 PWM PA10(TCC0 ch2, 미등 감광 예정) ·
+후진 INT PA04, 3.3 V 푸시풀 — LED 는 저항/드라이버 클릭 경유. WS2812 스트립은 나중에 슬롯 1 TX PB12(SERCOM4 SPI 데이터) — MOSI 는 T1S 클릭과
+공유라 안 됨, 5 V 스트립은 74AHCT125. 슬롯 2 는 모터/디스플레이용으로 비워 둠(PWM TCC0 ch3).
+**깜박임은 1.5 Hz, 위상을 LAN8651 PTP 클록에서** 가져온다 → 클록이 잠긴 노드끼리는 정확히 같이 깜박인다. LED0 도 지시등과 같이 깜박임.
+검증(2026-10-27): CARLA 주행 중 Autoware 가 켠 좌 지시등이 노드 `lamps` 에 left 1 로 일치, 키 ~30/s. 게이트웨이의 `hazard_lights` 명령은
+"Autoware 미연동"(게이트웨이 쪽 미구현).
+
 ## 시간 동기 (LAN8651 하드웨어 타임스탬프)
 
 ESP T1S HAT 펌웨어와 **같은 교환·같은 와이어 포맷**(UDP 5007 `SYNC`/`SYNF`, `ptp on`, `ptp lock <ip> [sec] [kp] [ki]`) — 어느 보드든 마스터가 될 수 있다.

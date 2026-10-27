@@ -1,0 +1,29 @@
+/*
+ * Zone lamps on mikroBUS slot 1 (slot 3 = T1S click, slot 2 kept for a motor / display click).
+ * Plain push-pull outputs, active high, 3.3 V: drive LEDs through a resistor or a driver click,
+ * never a lamp directly (README "Voltage rules"). Hazard = left + right.
+ *   left  AN  PA02 | right RST PA07 | brake PWM PA10 (TCC0 ch 2: tail dimming later) | reverse INT PA04
+ * A WS2812 strip, later, goes on slot 1 TX = PB12 (SERCOM4 PAD0 as SPI data out): MOSI PA16 is shared
+ * with the T1S click's SPI and cannot carry it. 5 V strips need a 74AHCT125 in between.
+ */
+/ {
+	zone_lamps {
+		compatible = "gpio-leds";
+		lamp_left: lamp_left {
+			gpios = <&mikrobus_1 0 GPIO_ACTIVE_HIGH>;
+			label = "left indicator";
+		};
+		lamp_right: lamp_right {
+			gpios = <&mikrobus_1 1 GPIO_ACTIVE_HIGH>;
+			label = "right indicator";
+		};
+		lamp_brake: lamp_brake {
+			gpios = <&mikrobus_1 6 GPIO_ACTIVE_HIGH>;
+			label = "brake";
+		};
+		lamp_reverse: lamp_reverse {
+			gpios = <&mikrobus_1 7 GPIO_ACTIVE_HIGH>;
+			label = "reverse";
+		};
+	};
+};

@@ -22,6 +22,7 @@
 #include <zephyr/dfu/mcuboot.h>
 #include <zephyr/net/net_pkt.h>
 #include <zephyr/sys/reboot.h>
+#include <zephyr/drivers/watchdog.h>
 #include <zephyr/logging/log.h>
 #include "t1s_diag.h"
 #include "zone.h"
@@ -370,12 +371,30 @@ int main(void)
 		plca_cfg.t1s_param.plca.node_count, ret);
 	k_msleep(100);
 
+	/* Hardware watchdog: 8 s without a pass of this loop (SPI or the stack wedged) = reset */
+	const struct device *wdt = DEVICE_DT_GET_OR_NULL(DT_ALIAS(watchdog0));
+	int wdt_ch = -ENODEV, wdt_ret = 0;
+
+	if (wdt && device_is_ready(wdt)) {
+		struct wdt_timeout_cfg wc = {.window = {.min = 0, .max = 8000}, .flags = WDT_FLAG_RESET_SOC};
+
+		wdt_ch = wdt_install_timeout(wdt, &wc);
+		if (wdt_ch >= 0 && (wdt_ret = wdt_setup(wdt, 0)) < 0) { /* sam0: no pause-in-debug */
+			wdt_ch = -1;
+		}
+	}
+	LOG_INF("watchdog %s (%d/%d)", wdt_ch >= 0 ? "on (8 s)" : "NOT available", wdt_ch, wdt_ret);
+
 	int64_t next = 0;
 	bool was_pst = true; /* so a node that boots with no coordinator counts as "lost" */
 
 	while (1) {
 		struct t1s_status st;
 		bool pst = (t1s_read_status(t1s, &st) == 0) && (st.plca_sts & BIT(15));
+
+		if (wdt_ch >= 0) {
+			wdt_feed(wdt, wdt_ch);
+		}
 
 		/*
 		 * A follower that ran without beacons has frames stuck in the MAC-PHY and its

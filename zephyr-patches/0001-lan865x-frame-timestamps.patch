@@ -1,5 +1,5 @@
 diff --git a/drivers/ethernet/eth_lan865x.c b/drivers/ethernet/eth_lan865x.c
-index 5a588914b..c9a16678c 100644
+index 5a588914b..193deb601 100644
 --- a/drivers/ethernet/eth_lan865x.c
 +++ b/drivers/ethernet/eth_lan865x.c
 @@ -51,10 +51,166 @@ static void lan865x_iface_init(struct net_if *iface)
@@ -236,7 +236,7 @@ index 5a588914b..c9a16678c 100644
  
  	/* Check if rca > 0 during half-duplex TX transmission */
  	if (tc6->rca > 0) {
-@@ -560,10 +759,50 @@ static int lan865x_port_send(const struct device *dev, struct net_pkt *pkt)
+@@ -560,10 +759,52 @@ static int lan865x_port_send(const struct device *dev, struct net_pkt *pkt)
  		return ret;
  	}
  
@@ -273,7 +273,9 @@ index 5a588914b..c9a16678c 100644
 +		oa_tc6_reg_write(tc6, OA_STATUS1, 0x3fu << 21);
 +		oa_tc6_reg_write(tc6, OA_STATUS0, OA_STATUS0_TTSCAA);
 +		k_sem_give(&ctx->tx_rx_sem);
++#if defined(CONFIG_NET_PKT_TIMESTAMP_THREAD)
 +		net_if_add_tx_timestamp(pkt);
++#endif
 +	}
 +#endif
 +

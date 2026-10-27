@@ -184,6 +184,11 @@ python3 ~/korea-autoware-sim/sdv/zonelink.py --api http://10.42.0.90:8780 --rout
 검증(2026-10-27): CARLA 주행 중 Autoware 가 켠 좌 지시등이 노드 `lamps` 에 left 1 로 일치, 키 ~30/s. 게이트웨이의 `hazard_lights` 명령은
 "Autoware 미연동"(게이트웨이 쪽 미구현).
 
+## 벤치 PC 쪽 기동
+
+`tools/bench_up.sh` (다시 돌려도 안전, `stop`/`status`): zenohd(tcp/192.168.100.51:7448) + zonelink(Autoware → VSS, 죽으면 재시작) + 콘솔(:8830).
+로그 `~/.cache/t1s-bench/`. 장시간 점검 `tools/soak.py [분]` — 30 s 마다 hello·PTP·램프·RX 풀·ping·SMP·Zenoh 재접속을 보고 이상만 모은다.
+
 ## 상시 운용 구성 (2026-10-27)
 
 ESP esp32-5 = **게이트웨이**(`mode node` + `gw on`, elite-t1s-hat e6a43b7): T1S 에 자기 IP .65(Zenoh·존 제어·동기 응답·부팅부터 `ptp on`) +
@@ -191,7 +196,8 @@ RJ45 를 버스에 브리지. PC 는 RJ45 쪽 .51 에서 노드(.73/.74)와 ESP(
 (.65) 에 영구 잠금**(0.7/0.3, 마스터가 없어지면 다시 step), 오프셋은 `t1s/sam<id>/hello` 의 `ptp_ns` 와 콘솔에 나온다.
 Zenoh 세션은 수신 감시(15 s 무수신 → 재접속)로 복구 — zenoh-pico 1.10 은 Zephyr 에서 recv()==0 을 "데이터 없음"으로 보고 끊김을 모른다
 (AUTO_RECONNECT 끔). **Zephyr `net_promisc_mode_on()` 금지**: 앱이 안 읽는 사본 큐가 RX 풀을 25 s 만에 비웠다 → MAC 의 CAF 비트만 켠다.
-RX 풀이 60 s 비면 재부팅(안전망). 실측: zenohd 를 25 s 죽였다 살리면 12 s 안에 재접속·램프 live.
+RX 풀이 60 s 비면 재부팅(안전망), 하드웨어 워치독 8 s(메인 루프가 먹임; sam0 은 디버그-정지 옵션 미지원 → 0). 표준 gPTP 는 기본 꺼짐
+(`-DEXTRA_CONF_FILE=gptp.conf`) — SAM 이 둘이면 gPTP 서보와 `ptp lock` 이 같은 TSU 를 서로 돌린다. 스레드 스택 최대 63 % (`kernel stacks`). 실측: zenohd 를 25 s 죽였다 살리면 12 s 안에 재접속·램프 live.
 **PTP 상시 잠금 실측(v0.6.2, 게이트웨이 브리지 동작 중, hello 의 `ptp_ns` 60 s)**: 평균 −1 ns, **σ 7 ns, 최대 21 ns**. ESP(마스터) 재부팅 →
 40 s 안에 재잠금(20 s −921 ns, 40 s −14 ns) → 다시 σ 7 ns / 최대 19 ns. 송신 캡처 3739 중 2 누락.
 함정: 늦게 나간 프레임의 스탬프가 남으면 다음 캡처가 **STATUS1.TTSCOFA(비트 21)** 로 넘치고, 그 뒤 칩이 캡처를 영영 안 한다 — IMASK1 이 가려

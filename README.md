@@ -145,3 +145,16 @@ interior 3, drive 0(코디네이터), 게이트웨이 4, count 5.
 4. **gPTP**: LAN8651 은 HW 타임스탬프를 갖지만 Zephyr 의 이 드라이버는 PTP 를 지원하지 않는다 — ESP HAT 쪽 `ptp gm` 구현을 참고해 드라이버 확장 필요.
 5. **Autoware 명령 중계**: Autoware PC 의 `/control/command/*`, `/vehicle/status/*` → zenoh-bridge-ros2dds → zenohd → 이 노드.
 6. PLCA id / IP 를 `settings`(NVS, `storage_partition`)에 저장해 노드 4대를 같은 바이너리로.
+
+## Voltage rules for the mikroBUS slots
+
+The slots carry **both 3.3 V and 5 V supply pins**, but **every signal pin is 3.3 V logic**. The ATSAME51 I/O is not
+5 V tolerant, so never drive a 5 V signal into it.
+
+- **WS2812B strips (5 V):** a "high" needs 0.7 x VDD = 3.5 V. 3.3 V data is out of spec, so put a 74AHCT125 (or similar)
+  level shifter in the data line. Power the strip from its own 5 V supply, not the slot's 5 V pin (the base is
+  USB-powered, a few hundred mA at most), and share GND only.
+- **Servos / ESC:** 3.3 V PWM is normally accepted (threshold about 2 V). Power them from a separate 5-6 V supply,
+  because stall and inrush current on the board's rail can reset the node. Hardware PWM is available on slots 1 and 2
+  only (slot 3's PWM pin has no TCC).
+- **Displays / sensors:** 3.3 V parts connect directly. 5 V outputs need a divider or a level shifter.

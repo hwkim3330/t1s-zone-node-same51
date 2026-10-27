@@ -168,6 +168,18 @@ EVB 가 없으면 재시작 루프 — 건드리지 않았다).
 queue"), POSIX mutex 32 / cond 16(기본 ~5 → zenoh 의 `System error: 12` 후 22 반복), 모듈이 안 만들어 주는 `config.h` 를 `apps/node/zenoh-config/`
 에 둠. zenoh 재접속 루프가 버퍼를 잡아먹은 이미지에는 SMP 업로드도 안 들어가 → `kernel reboot cold` 직후 올리면 된다.
 
+## 시간 동기 (LAN8651 하드웨어 타임스탬프)
+
+ESP T1S HAT 펌웨어와 **같은 교환·같은 와이어 포맷**(UDP 5007 `SYNC`/`SYNF`, `ptp on`, `ptp lock <ip> [sec] [kp] [ki]`) — 어느 보드든 마스터가 될 수 있다.
+Zephyr 의 LAN865x 드라이버엔 타임스탬프가 없어 **`zephyr-patches/0001-lan865x-frame-timestamps.patch` 를 zephyr 트리에 적용해야 빌드된다**
+(`git -C ~/zephyrproject/zephyr apply zephyr-patches/0001-*.patch`): FTSE/FTSS 를 SYNC 와 함께 세움(나중에 쓰면 무시됨), 수신 프레임 앞 8바이트
+스탬프 제거 + 훅, 송신 첫 청크 헤더 TSC=A, STATUS0.TTSCAA 를 오류로 찍지 않고 TTSCAH/L 을 읽어 둠. ESP 쪽 드라이버의 LOCAL PATCH 와 같은 설계.
+
+`ptp on` = TSU 증분 40 ns + PHY 패킷 매처를 모든 프레임에(MMS4 0x43–0x55, TXMCTL/RXMCTL) + 드라이버 훅. 응답 서버(5007)는 항상 돈다.
+
+검증(2026-10-27, 보드 1대): FTSE/FTSS 래치 확인(OA_CONFIG0 0x90e6), 수신 스탬프 제거 후에도 ping·Zenoh 정상. **SAM↔SAM 하드웨어 양끝 측정은
+두 번째 보드에 MCUboot 를 올린 뒤** — ESP README 가 "다음 단계"로 적어 둔 바로 그 구성.
+
 ## 노드 정체성 (ID/IP)
 
 부팅 시 순서: **저장값**(`t1s save`) → **MAC 표**(`main.c` 의 `bench[]`, 클릭 EEPROM 의 EUI-48) → Kconfig. 그래서 모든 보드가 같은

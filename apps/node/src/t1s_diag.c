@@ -30,3 +30,54 @@ int t1s_read_status(const struct device *dev, struct t1s_status *st)
 	k_sem_give(&ctx->tx_rx_sem);
 	return err ? -EIO : 0;
 }
+
+int t1s_reg_read(const struct device *dev, uint32_t reg, uint32_t *val)
+{
+	struct lan865x_data *ctx = dev->data;
+
+	if (k_sem_take(&ctx->tx_rx_sem, K_MSEC(200)) != 0) {
+		return -EBUSY;
+	}
+	int ret = rd(ctx, reg, val);
+
+	k_sem_give(&ctx->tx_rx_sem);
+	return ret;
+}
+
+int t1s_reg_write(const struct device *dev, uint32_t reg, uint32_t val)
+{
+	struct lan865x_data *ctx = dev->data;
+
+	if (k_sem_take(&ctx->tx_rx_sem, K_MSEC(200)) != 0) {
+		return -EBUSY;
+	}
+	int ret = oa_tc6_reg_write(ctx->tc6, reg, val);
+
+	k_sem_give(&ctx->tx_rx_sem);
+	return ret;
+}
+
+int t1s_take_tx_stamp(const struct device *dev, uint64_t *ts, int timeout_ms)
+{
+	struct lan865x_data *ctx = dev->data;
+	struct oa_tc6 *tc6 = ctx->tc6;
+
+	for (int i = 0; i < timeout_ms * 10; i++) {
+		if (tc6->tx_ts_valid) { /* the driver's status check got there first */
+			*ts = tc6->tx_ts;
+			tc6->tx_ts_valid = false;
+			return 0;
+		}
+		uint32_t st = 0, hi = 0, lo = 0;
+
+		if (t1s_reg_read(dev, 0x00000008, &st) == 0 && (st & BIT(8))) { /* STATUS0.TTSCAA */
+			t1s_reg_read(dev, 0x00000010, &hi);
+			t1s_reg_read(dev, 0x00000011, &lo);
+			t1s_reg_write(dev, 0x00000008, BIT(8)); /* write-1-to-clear */
+			*ts = (uint64_t)hi << 32 | lo;
+			return 0;
+		}
+		k_busy_wait(100);
+	}
+	return -EAGAIN;
+}

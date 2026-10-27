@@ -16,7 +16,9 @@ list(APPEND ZEPHYR_EXTRA_MODULES ${ZENOH_PICO_DIR})
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(t1s_zone_node)
 
-target_sources(app PRIVATE src/main.c src/t1s_diag.c)
+target_sources(app PRIVATE src/main.c src/t1s_diag.c src/ptp.c)
+# LAN8651 frame timestamps: needs the LOCAL PATCH in zephyr-patches/ applied to the zephyr tree
+zephyr_compile_definitions(LAN865X_FRAME_TIMESTAMPS)
 if(CONFIG_APP_ZENOH)
   # the module does not run zenoh-pico's configure step; this is its config.h
   zephyr_include_directories(${CMAKE_CURRENT_LIST_DIR}/zenoh-config)

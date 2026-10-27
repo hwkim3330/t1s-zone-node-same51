@@ -1,0 +1,173 @@
+diff --git a/drivers/ethernet/eth_lan865x.c b/drivers/ethernet/eth_lan865x.c
+index 5a588914b..a33942d5d 100644
+--- a/drivers/ethernet/eth_lan865x.c
++++ b/drivers/ethernet/eth_lan865x.c
+@@ -410,6 +410,25 @@ static void lan865x_read_chunks(const struct device *dev)
+ 		return;
+ 	}
+ 
++	/* LOCAL PATCH (t1s-zone-node): strip a prepended ingress stamp (FTSS: seconds, ns, BE) */
++	if (tc6->pkt_ts && net_pkt_get_len(pkt) > 8) {
++		uint8_t b[8];
++		uint64_t ts = 0;
++
++		net_pkt_cursor_init(pkt);
++		net_pkt_read(pkt, b, sizeof(b));
++		for (int i = 0; i < 8; i++) {
++			ts = ts << 8 | b[i];
++		}
++		net_pkt_cursor_init(pkt);
++		net_pkt_pull(pkt, sizeof(b));
++		net_pkt_cursor_init(pkt);
++		if (oa_tc6_rx_ts_cb) {
++			oa_tc6_rx_ts_cb(pkt, ts);
++			net_pkt_cursor_init(pkt);
++		}
++	}
++
+ 	/* Feed buffer frame to IP stack */
+ 	ret = net_recv_data(ctx->iface, pkt);
+ 	if (ret < 0) {
+@@ -435,6 +454,9 @@ static void lan865x_int_thread(const struct device *dev)
+ 				lan865x_default_config(dev, ctx->silicon_rev);
+ 				oa_tc6_reg_read(tc6, OA_CONFIG0, &val);
+ 				val |= OA_CONFIG0_SYNC | OA_CONFIG0_RFA_ZARFE;
++#ifdef LAN865X_FRAME_TIMESTAMPS /* LOCAL PATCH: only latches together with SYNC */
++				val |= OA_CONFIG0_FTSE | OA_CONFIG0_FTSS;
++#endif
+ 				oa_tc6_reg_write(tc6, OA_CONFIG0, val);
+ 				lan865x_mac_rxtx_control(dev, LAN865x_MAC_TXRX_ON);
+ 
+diff --git a/drivers/ethernet/oa_tc6.c b/drivers/ethernet/oa_tc6.c
+index 2b1e017f0..ce3b5fab8 100644
+--- a/drivers/ethernet/oa_tc6.c
++++ b/drivers/ethernet/oa_tc6.c
+@@ -167,8 +167,12 @@ int oa_tc6_set_protected_ctrl(struct oa_tc6 *tc6, bool prote)
+ 	return 0;
+ }
+ 
++bool (*oa_tc6_tx_ts_want)(struct net_pkt *pkt);
++void (*oa_tc6_rx_ts_cb)(struct net_pkt *pkt, uint64_t ts);
++
+ int oa_tc6_send_chunks(struct oa_tc6 *tc6, struct net_pkt *pkt)
+ {
++	bool want_ts = oa_tc6_tx_ts_want && oa_tc6_tx_ts_want(pkt); /* LOCAL PATCH */
+ 	uint16_t len = net_pkt_get_len(pkt);
+ 	uint8_t oa_tx[tc6->cps];
+ 	uint32_t hdr, ftr;
+@@ -198,6 +202,10 @@ int oa_tc6_send_chunks(struct oa_tc6 *tc6, struct net_pkt *pkt)
+ 
+ 		if (i == 1) {
+ 			hdr |= FIELD_PREP(OA_DATA_HDR_SV, 1);
++			if (want_ts) { /* LOCAL PATCH: capture this frame's egress into TTSCA */
++				tc6->tx_ts_valid = false;
++				hdr |= FIELD_PREP(OA_DATA_HDR_TSC, 1);
++			}
+ 		}
+ 
+ 		if (i == chunks) {
+@@ -239,9 +247,19 @@ int oa_tc6_check_status(struct oa_tc6 *tc6)
+ 		 * device configuration.
+ 		 */
+ 		oa_tc6_reg_read(tc6, OA_STATUS0, &sts);
++		if (sts & OA_STATUS0_TTSCAA) { /* LOCAL PATCH: an egress stamp, not an error */
++			uint32_t hi = 0, lo = 0;
++
++			oa_tc6_reg_read(tc6, OA_TTSCAH, &hi);
++			oa_tc6_reg_read(tc6, OA_TTSCAL, &lo);
++			tc6->tx_ts = (uint64_t)hi << 32 | lo;
++			tc6->tx_ts_valid = true;
++		}
+ 		if (sts != 0) {
+ 			oa_tc6_reg_write(tc6, OA_STATUS0, sts);
+-			LOG_WRN("EXST: OA_STATUS0: 0x%x", sts);
++			if (sts & ~OA_STATUS0_TTSCAA) {
++				LOG_WRN("EXST: OA_STATUS0: 0x%x", sts);
++			}
+ 		}
+ 
+ 		oa_tc6_reg_read(tc6, OA_STATUS1, &sts);
+@@ -329,9 +347,11 @@ int oa_tc6_read_chunks(struct oa_tc6 *tc6, struct net_pkt *pkt)
+ 	 * Special case - append already received data (extracted from previous
+ 	 * chunk) to new packet.
+ 	 */
++	tc6->pkt_ts = false;
+ 	if (tc6->concat_buf) {
+ 		net_pkt_append_buffer(pkt, tc6->concat_buf);
+ 		tc6->concat_buf = NULL;
++		tc6->pkt_ts = tc6->concat_ts; /* LOCAL PATCH */
+ 	}
+ 
+ 	do {
+@@ -379,6 +399,9 @@ int oa_tc6_read_chunks(struct oa_tc6 *tc6, struct net_pkt *pkt)
+ 				if (sbo) {
+ 					net_buf_pull(buf_rx, sbo);
+ 				}
++				tc6->pkt_ts = FIELD_GET(OA_DATA_FTR_RTSA, ftr); /* LOCAL PATCH */
++			} else {
++				tc6->concat_ts = FIELD_GET(OA_DATA_FTR_RTSA, ftr); /* next frame's */
+ 			}
+ 		}
+ 
+diff --git a/drivers/ethernet/oa_tc6.h b/drivers/ethernet/oa_tc6.h
+index 0918e1382..8ab000043 100644
+--- a/drivers/ethernet/oa_tc6.h
++++ b/drivers/ethernet/oa_tc6.h
+@@ -23,6 +23,12 @@
+ #define OA_CONFIG0_SYNC               BIT(15)
+ #define OA_CONFIG0_RFA_ZARFE          BIT(12)
+ #define OA_CONFIG0_PROTE              BIT(5)
++/* LOCAL PATCH (t1s-zone-node): frame timestamps. FTSE/FTSS only latch when written with SYNC. */
++#define OA_CONFIG0_FTSE               BIT(7)
++#define OA_CONFIG0_FTSS               BIT(6)
++#define OA_STATUS0_TTSCAA             BIT(8)
++#define OA_TTSCAH                     MMS_REG(0x0, 0x010)
++#define OA_TTSCAL                     MMS_REG(0x0, 0x011)
+ #define OA_STATUS0                    MMS_REG(0x0, 0x008)
+ #define OA_STATUS0_RESETC             BIT(6)
+ #define OA_STATUS1                    MMS_REG(0x0, 0x009)
+@@ -58,6 +64,7 @@
+ #define OA_DATA_HDR_SWO		      GENMASK(19, 16)
+ #define OA_DATA_HDR_EV		      BIT(14)
+ #define OA_DATA_HDR_EBO		      GENMASK(13, 8)
++#define OA_DATA_HDR_TSC		      GENMASK(7, 6) /* LOCAL PATCH: egress capture A/B/C */
+ #define OA_DATA_HDR_P		      BIT(0)
+ 
+ /* OA Data footer */
+@@ -71,6 +78,8 @@
+ #define OA_DATA_FTR_FD		      BIT(15)
+ #define OA_DATA_FTR_EV		      BIT(14)
+ #define OA_DATA_FTR_EBO		      GENMASK(13, 8)
++#define OA_DATA_FTR_RTSA	      BIT(7) /* LOCAL PATCH: 8-byte ingress stamp prepended */
++#define OA_DATA_FTR_RTSP	      BIT(6)
+ #define OA_DATA_FTR_TXC		      GENMASK(5, 1)
+ #define OA_DATA_FTR_P		      BIT(0)
+ 
+@@ -110,8 +119,27 @@ struct oa_tc6 {
+ 
+ 	/** Pointer to network buffer concatenated from received chunk */
+ 	struct net_buf *concat_buf;
++
++	/* LOCAL PATCH (t1s-zone-node): frame timestamps */
++	/** the packet just read carries a prepended 64-bit ingress stamp */
++	bool pkt_ts;
++	/** ...and so does the frame that started in concat_buf */
++	bool concat_ts;
++	/** egress stamp of the last frame sent with TSC = A (seconds << 32 | ns), valid when set */
++	volatile uint64_t tx_ts;
++	volatile bool tx_ts_valid;
+ };
+ 
++/*
++ * LOCAL PATCH (t1s-zone-node): frame timestamp hooks, set by the application.
++ * oa_tc6_tx_ts_want: asked for every frame sent; true = capture its egress time into TTSCA
++ *   (the driver reads it on the next status check into tx_ts / tx_ts_valid).
++ * oa_tc6_rx_ts_cb: called for every received frame that carried an ingress stamp, after the
++ *   stamp is stripped and before the frame goes up the stack. Driver context: keep it short.
++ */
++extern bool (*oa_tc6_tx_ts_want)(struct net_pkt *pkt);
++extern void (*oa_tc6_rx_ts_cb)(struct net_pkt *pkt, uint64_t ts);
++
+ typedef struct {
+ 	uint32_t address;
+ 	uint32_t value;

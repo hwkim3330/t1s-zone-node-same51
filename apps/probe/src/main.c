@@ -13,15 +13,15 @@
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/printk.h>
+#include <soc.h>
 
 #define SPI_NODE DT_NODELABEL(sercom1)
 #define I2C_NODE DT_NODELABEL(sercom2)
 
-#define SLOT_PIN(n, idx) GPIO_DT_SPEC_GET_BY_IDX(DT_NODELABEL(n), gpios, idx)
 
-/* Pins come from the board's mikroBUS nexus nodes via a /zephyr,user-like
- * helper node in the overlay (probe.overlay). */
-#define PROBE DT_PATH(slot_probe)
+/* RST/INT of each slot come from the board mikroBUS nexus nodes, listed in
+ * /zephyr,user by app.overlay. */
+#define PROBE DT_PATH(zephyr_user)
 
 struct slot {
 	int num;
@@ -118,6 +118,26 @@ static int probe_slot(const struct slot *s)
 
 static void i2c_scan(void)
 {
+	static bool done;
+	if (done) {
+		return;
+	}
+	done = true;
+	/* Line levels first: a bus without pull-ups (or held low) hangs the SERCOM */
+	PORT->Group[0].PINCFG[12].bit.INEN = 1;
+	PORT->Group[0].PINCFG[13].bit.INEN = 1;
+	k_busy_wait(10);
+	uint32_t in = PORT->Group[0].IN.reg;
+	printk("I2C lines: SDA(PA12)=%d SCL(PA13)=%d\n", (int)((in >> 12) & 1),
+	       (int)((in >> 13) & 1));
+	if (!((in >> 12) & 1) || !((in >> 13) & 1)) {
+		printk("I2C: a line is low (no pull-up?) - scan skipped\n");
+		return;
+	}
+	if (!device_is_ready(i2c)) {
+		printk("I2C: controller not ready\n");
+		return;
+	}
 	printk("I2C (shared mikroBUS SCL/SDA) scan:");
 	for (uint8_t a = 0x08; a < 0x78; a++) {
 		uint8_t b;
@@ -135,6 +155,8 @@ static void i2c_scan(void)
 		}
 	}
 }
+
+K_THREAD_DEFINE(i2c_tid, 1024, i2c_scan, NULL, NULL, NULL, 10, 0, 3000);
 
 int main(void)
 {
@@ -154,7 +176,6 @@ int main(void)
 		if (!found) {
 			printk("RESULT: no LAN865x answered on any slot\n");
 		}
-		i2c_scan();
 		k_msleep(5000);
 	}
 	return 0;

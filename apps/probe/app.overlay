@@ -1,6 +1,5 @@
 / {
-	slot_probe {
-		compatible = "zephyr,user";
+	zephyr,user {
 		/* RST and INT of slots 1..3 through the board's mikroBUS nexus nodes */
 		rst-gpios = <&mikrobus_1 1 GPIO_ACTIVE_LOW>,
 			    <&mikrobus_2 1 GPIO_ACTIVE_LOW>,

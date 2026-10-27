@@ -150,11 +150,15 @@ mikrobus_spi: &sercom1 {
 	pinctrl-names = "default";
 };
 
-/* Shared mikroBUS I2C */
+/*
+ * Shared mikroBUS I2C. Must be FAST (400 kHz): i2c_sam0 derives BAUD from the
+ * 120 MHz GCLK0, and 100 kHz needs BAUD 592 > 255, so init fails with -ERANGE
+ * and the first transfer then blocks forever on an uninitialised semaphore.
+ */
 mikrobus_i2c: &sercom2 {
 	status = "okay";
 	compatible = "atmel,sam0-i2c";
-	clock-frequency = <I2C_BITRATE_STANDARD>;
+	clock-frequency = <I2C_BITRATE_FAST>;
 	#address-cells = <1>;
 	#size-cells = <0>;
 	pinctrl-0 = <&sercom2_i2c_default>;

@@ -117,6 +117,11 @@ class Board:
             st['seen'] = time.time()
         if (m := re.match(r'link: (\w+)\s+ip (\d+\.\d+\.\d+\.\d+)', l)) and m[2] != '0.0.0.0':
             st['ip'] = m[2]
+        if m := re.match(r'ptpl: \d+ offset (-?\d+) ns delay (-?\d+) ns', l):
+            st['ptp_ns'], st['ptp_delay'], st['ptp_at'] = int(m[1]), int(m[2]), time.time()
+        if m := re.match(r'ptp: .*last offset (-?\d+) ns delay (-?\d+) ns', l):
+            if 'lock off' not in l:
+                st['ptp_ns'], st['ptp_delay'], st['ptp_at'] = int(m[1]), int(m[2]), time.time()
         if m := re.match(r'mode: (\w+)', l):
             st['mode'] = m[1]
             if m[1] == 'bridge':
@@ -136,8 +141,12 @@ class Board:
                 time.sleep(10); self.send('status')
         else:
             self.send('net iface')
+            n = 0
             while True:
                 time.sleep(3); self.send('t1s status')
+                n += 1
+                if n % 3 == 0:
+                    self.send('ptp')
 
     def run(self, cmd, wait):
         t0 = time.time(); self.send(cmd); time.sleep(wait)

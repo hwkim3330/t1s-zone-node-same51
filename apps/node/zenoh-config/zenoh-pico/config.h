@@ -158,7 +158,7 @@
 #define Z_FEATURE_UNICAST_PEER 0
 #endif
 #ifndef Z_FEATURE_AUTO_RECONNECT
-#define Z_FEATURE_AUTO_RECONNECT 1
+#define Z_FEATURE_AUTO_RECONNECT 0 /* zone_zenoh.c reconnects; the built-in one went silent after a bus outage */
 #endif
 #ifndef Z_FEATURE_MULTICAST_DECLARATIONS
 #define Z_FEATURE_MULTICAST_DECLARATIONS 0

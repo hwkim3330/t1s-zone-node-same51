@@ -184,6 +184,15 @@ python3 ~/korea-autoware-sim/sdv/zonelink.py --api http://10.42.0.90:8780 --rout
 검증(2026-10-27): CARLA 주행 중 Autoware 가 켠 좌 지시등이 노드 `lamps` 에 left 1 로 일치, 키 ~30/s. 게이트웨이의 `hazard_lights` 명령은
 "Autoware 미연동"(게이트웨이 쪽 미구현).
 
+## 상시 운용 구성 (2026-10-27)
+
+ESP esp32-5 = **게이트웨이**(`mode node` + `gw on`, elite-t1s-hat e6a43b7): T1S 에 자기 IP .65(Zenoh·존 제어·동기 응답·부팅부터 `ptp on`) +
+RJ45 를 버스에 브리지. PC 는 RJ45 쪽 .51 에서 노드(.73/.74)와 ESP(.65) 둘 다 닿는다. SAM 노드는 부팅하면 비컨을 기다려 **`CONFIG_APP_PTP_MASTER`
+(.65) 에 영구 잠금**(0.7/0.3, 마스터가 없어지면 다시 step), 오프셋은 `t1s/sam<id>/hello` 의 `ptp_ns` 와 콘솔에 나온다.
+Zenoh 세션은 수신 감시(15 s 무수신 → 재접속)로 복구 — zenoh-pico 1.10 은 Zephyr 에서 recv()==0 을 "데이터 없음"으로 보고 끊김을 모른다
+(AUTO_RECONNECT 끔). **Zephyr `net_promisc_mode_on()` 금지**: 앱이 안 읽는 사본 큐가 RX 풀을 25 s 만에 비웠다 → MAC 의 CAF 비트만 켠다.
+RX 풀이 60 s 비면 재부팅(안전망). 실측: zenohd 를 25 s 죽였다 살리면 12 s 안에 재접속·램프 live.
+
 ## 시간 동기 (LAN8651 하드웨어 타임스탬프)
 
 ESP T1S HAT 펌웨어와 **같은 교환·같은 와이어 포맷**(UDP 5007 `SYNC`/`SYNF`, `ptp on`, `ptp lock <ip> [sec] [kp] [ki]`) — 어느 보드든 마스터가 될 수 있다.

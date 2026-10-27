@@ -24,6 +24,7 @@
 #include <zephyr/logging/log.h>
 #include "t1s_diag.h"
 #include "oa_tc6.h"
+#include "zone.h"
 
 LOG_MODULE_REGISTER(zone_ptp, LOG_LEVEL_INF);
 
@@ -233,7 +234,9 @@ static void lock_thread(void *a, void *b, void *c)
 		tsu_freq(0);
 		printk("ptpl: locking the LAN8651 clock to %s for %d s (kp %.2f ki %.3f)\n", lock_host,
 		       lock_secs, lock_kp, lock_ki);
-		for (int sec = 0; sec < lock_secs && lock_run; sec++) {
+		int quiet = 0;
+
+		for (int sec = 0; (lock_secs == 0 || sec < lock_secs) && lock_run; sec++) {
 			int64_t best_off = 0, best_dly = INT64_MAX;
 			int ok = 0;
 
@@ -285,8 +288,18 @@ static void lock_thread(void *a, void *b, void *c)
 				k_msleep(54);
 			}
 			if (!ok) {
-				printk("ptpl: %d s no hardware-stamped answers\n", sec);
+				ptp_last_offset_ns = INT64_MIN;
+				if (++quiet % 10 == 1) {
+					printk("ptpl: %d s no hardware-stamped answers from %s\n", sec, lock_host);
+				}
+				if (quiet > 5) {
+					stepped = false; /* master gone a while: step again when it is back */
+				}
 				continue;
+			}
+			quiet = 0;
+			if (stepped && (best_off > 1000000 || best_off < -1000000)) {
+				stepped = false; /* > 1 ms off (master restarted): step instead of slewing */
 			}
 			if (!stepped) {
 				tsu_step(best_off);
@@ -300,8 +313,10 @@ static void lock_thread(void *a, void *b, void *c)
 			tsu_freq(freq);
 			ptp_last_offset_ns = best_off;
 			ptp_last_delay_ns = best_dly;
-			printk("ptpl: %d offset %lld ns delay %lld ns freq %+d ppb (%d/16)\n", sec,
-			       (long long)best_off, (long long)best_dly, (int)freq, ok);
+			if (lock_secs || sec % 10 == 0) { /* for ever: one line per 10 s */
+				printk("ptpl: %d offset %lld ns delay %lld ns freq %+d ppb (%d/16)\n", sec,
+				       (long long)best_off, (long long)best_dly, (int)freq, ok);
+			}
 		}
 		zsock_close(s);
 		printk("ptpl: done, holding %+d ppb\n", (int)freq);
@@ -309,6 +324,28 @@ static void lock_thread(void *a, void *b, void *c)
 	}
 }
 K_THREAD_DEFINE(lock_tid, 3072, lock_thread, NULL, NULL, NULL, 5, 0, 3000);
+
+/* At boot: once the coordinator's beacons are heard, hardware stamps on and a lock for ever. */
+static void ptp_auto(void *a, void *b, void *c)
+{
+	if (!strlen(CONFIG_APP_PTP_MASTER)) {
+		return;
+	}
+	while (!zone_bus_up()) {
+		k_msleep(500);
+	}
+	k_msleep(3000);
+	ptp_enable(true);
+	strncpy(lock_host, CONFIG_APP_PTP_MASTER, sizeof(lock_host) - 1);
+	lock_secs = 0;
+	lock_kp = 0.7; /* hardware stamps on both ends: ptp4l's gains (measured 2026-10-27) */
+	lock_ki = 0.3;
+	lock_run = true;
+	LOG_INF("ptp: locking to %s for ever", lock_host);
+}
+K_THREAD_DEFINE(ptp_auto_tid, 1024, ptp_auto, NULL, NULL, NULL, 9, 0, 4000);
+
+int64_t zone_ptp_offset_ns(void) { return lock_run ? ptp_last_offset_ns : INT64_MIN; }
 
 static int cmd_ptp(const struct shell *sh, size_t argc, char **argv)
 {
@@ -320,7 +357,7 @@ static int cmd_ptp(const struct shell *sh, size_t argc, char **argv)
 			return -EINVAL;
 		}
 		strncpy(lock_host, argv[2], sizeof(lock_host) - 1);
-		lock_secs = argc > 3 ? CLAMP(atoi(argv[3]), 3, 86400) : 60;
+		lock_secs = argc > 3 ? CLAMP(atoi(argv[3]), 0, 86400) : 60; /* 0 = for ever */
 		lock_kp = argc > 4 ? strtod(argv[4], NULL) : 0.2;
 		lock_ki = argc > 5 ? strtod(argv[5], NULL) : 0.02;
 		lock_run = true;

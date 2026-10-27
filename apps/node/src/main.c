@@ -20,7 +20,8 @@
 #include <zephyr/shell/shell.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/dfu/mcuboot.h>
-#include <zephyr/net/promiscuous.h>
+#include <zephyr/net/net_pkt.h>
+#include <zephyr/sys/reboot.h>
 #include <zephyr/logging/log.h>
 #include "t1s_diag.h"
 #include "zone.h"
@@ -351,8 +352,17 @@ int main(void)
 	set_mac_from_eeprom();
 	pick_identity();
 #ifdef CONFIG_NET_GPTP
-	/* gPTP's 01:80:C2:00:00:0E is not in the LAN8651's address filter */
-	LOG_INF("promiscuous for gPTP (%d)", net_promisc_mode_on(iface));
+	/*
+	 * gPTP's 01:80:C2:00:00:0E is not in the LAN8651's address filter: let the MAC copy all frames
+	 * (NCFGR.CAF). Not Zephyr's net_promisc_mode_on(): that also queues a copy of every frame for
+	 * an application reader, and with nobody reading it the RX packet pool ran dry in 25 s once
+	 * the ESP gateway bridged the PC LAN's broadcasts onto the bus (2026-10-27). The Ethernet L2
+	 * still drops unicast that is not ours.
+	 */
+	uint32_t ncfgr = 0;
+
+	t1s_reg_read(t1s, 0x00010001, &ncfgr);
+	LOG_INF("MAC copy-all for gPTP (%d)", t1s_reg_write(t1s, 0x00010001, ncfgr | BIT(4)));
 #endif
 	int ret = apply_plca();
 
@@ -376,6 +386,29 @@ int main(void)
 			LOG_INF("beacons back: re-applying PLCA (%d)", apply_plca());
 		}
 		was_pst = pst;
+
+		/*
+		 * Network health: with the RX packet slab empty nothing arrives any more (not even a
+		 * firmware update), and nothing frees it. 60 s of that = reboot; MCUboot keeps the
+		 * confirmed image. Seen 2026-10-27 after a zenohd outage (root cause being chased).
+		 */
+		static int64_t rx_empty_since;
+		struct k_mem_slab *rx_slab, *tx_slab;
+		struct net_buf_pool *rx_data, *tx_data;
+
+		net_pkt_get_info(&rx_slab, &tx_slab, &rx_data, &tx_data);
+		if (k_mem_slab_num_free_get(rx_slab) == 0) {
+			if (!rx_empty_since) {
+				rx_empty_since = k_uptime_get();
+				LOG_WRN("RX packet pool empty");
+			} else if (k_uptime_get() - rx_empty_since > 60000) {
+				LOG_ERR("RX packet pool empty for 60 s: rebooting");
+				k_msleep(100);
+				sys_reboot(SYS_REBOOT_COLD);
+			}
+		} else {
+			rx_empty_since = 0;
+		}
 
 		bus_up = pst;
 		/* LED0 (AUTO): solid = PLCA active (beacons), slow blink = waiting for a coordinator */

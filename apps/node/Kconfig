@@ -36,4 +36,11 @@ config APP_ZENOH_LOCATOR
 	default "tcp/192.168.100.51:7448"
 	depends on APP_ZENOH
 
+config APP_PTP_MASTER
+	string "Lock the LAN8651 clock to this sync answerer at boot (empty = only by hand)"
+	default "192.168.100.65"
+	help
+	  The ESP gateway (`mode node` + `gw on`) answers the UDP 5007 exchange with hardware stamps.
+	  The lock runs for ever: re-locked after a lost master, offset in t1s/sam<id>/hello.
+
 source "Kconfig.zephyr"

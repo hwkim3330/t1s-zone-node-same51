@@ -22,7 +22,12 @@ LOG_MODULE_REGISTER(zone_zenoh, LOG_LEVEL_INF);
 
 static char locator[64] = CONFIG_APP_ZENOH_LOCATOR;
 static volatile bool connected;
-static uint32_t n_hello, n_cmd, n_open_fail;
+static uint32_t n_hello, n_cmd, n_open_fail, n_reconnect;
+/* zenoh-pico 1.10 on Zephyr takes recv() == 0 (peer closed) for "no data" and never closes the
+ * session, so a dead router or link went unnoticed. Anything we subscribe to counts as proof of life:
+ * the ZoneLink sidecar sends vehicle/speed at >= 5 Hz. Nothing for WATCHDOG_MS = reconnect. */
+#define WATCHDOG_MS 15000
+static volatile int64_t last_rx_ms;
 static z_owned_publisher_t pub_ack;
 static bool ack_ok;
 
@@ -59,6 +64,7 @@ static void on_cmd(z_loaned_sample_t *sample, void *arg)
 	memcpy(cmd, z_string_data(z_string_loan(&s)), n);
 	z_string_drop(z_string_move(&s));
 	n_cmd++;
+	last_rx_ms = k_uptime_get();
 
 	if (!strncmp(cmd, "led ", 4)) {
 		const char *m = cmd + 4;
@@ -93,6 +99,7 @@ static void on_vehicle(z_loaned_sample_t *sample, void *arg)
 	z_bytes_reader_t r = z_bytes_get_reader(z_sample_payload(sample));
 	size_t n = z_bytes_reader_read(&r, v, sizeof(v));
 
+	last_rx_ms = k_uptime_get();
 	zone_lamps_on_vss(key + 8, v, n); /* after "vehicle/" */
 }
 
@@ -146,6 +153,7 @@ static void zenoh_thread(void *a, void *b, void *c)
 		z_declare_subscriber(z_session_loan(&s), &sub3, z_view_keyexpr_loan(&k), z_closure_sample_move(&c3), NULL);
 
 		connected = true;
+		last_rx_ms = k_uptime_get();
 		LOG_INF("zenoh: connected to %s as t1s/sam%u", locator, id);
 
 		/* z_publisher_put fails once the lease task has closed a dead session */
@@ -154,10 +162,23 @@ static void zenoh_thread(void *a, void *b, void *c)
 			z_owned_bytes_t pl;
 
 			zone_ip_str(ip, sizeof(ip));
-			snprintf(msg, sizeof(msg), "{\"id\":%u,\"ip\":\"%s\",\"up\":%u,\"pst\":%d,\"cmds\":%u}",
-				 id, ip, (unsigned)(k_uptime_get() / 1000), zone_bus_up(), n_cmd);
+			int64_t po = zone_ptp_offset_ns();
+			char ptp[24] = "null";
+
+			if (po != INT64_MIN) {
+				snprintf(ptp, sizeof(ptp), "%lld", (long long)po);
+			}
+			snprintf(msg, sizeof(msg),
+				 "{\"id\":%u,\"ip\":\"%s\",\"up\":%u,\"pst\":%d,\"cmds\":%u,\"ptp_ns\":%s}", id, ip,
+				 (unsigned)(k_uptime_get() / 1000), zone_bus_up(), n_cmd, ptp);
 			z_bytes_copy_from_str(&pl, msg);
-			if (z_publisher_put(z_publisher_loan(&hello), z_bytes_move(&pl), NULL) < 0) {
+			if (z_publisher_put(z_publisher_loan(&hello), z_bytes_move(&pl), NULL) < 0 ||
+			    z_session_is_closed(z_session_loan(&s))) {
+				break;
+			}
+			if (k_uptime_get() - last_rx_ms > WATCHDOG_MS) {
+				LOG_WRN("zenoh: nothing received for %d s, reconnecting", WATCHDOG_MS / 1000);
+				n_reconnect++;
 				break;
 			}
 			n_hello++;
@@ -171,6 +192,8 @@ static void zenoh_thread(void *a, void *b, void *c)
 		z_undeclare_subscriber(z_subscriber_move(&sub3));
 		z_undeclare_publisher(z_publisher_move(&hello));
 		z_undeclare_publisher(z_publisher_move(&pub_ack));
+		zp_stop_read_task(z_session_loan_mut(&s));
+		zp_stop_lease_task(z_session_loan_mut(&s));
 		z_session_drop(z_session_move(&s));
 		k_msleep(1000);
 	}
@@ -186,9 +209,9 @@ static int cmd_zenoh(const struct shell *sh, size_t argc, char **argv)
 		shell_print(sh, "zenoh: router %s saved (takes effect on reconnect / reboot)", locator);
 		return 0;
 	}
-	shell_print(sh, "zenoh: %s %s | hello sent %u | cmds %u | open failures %u",
-		    connected ? "connected to" : "not connected, router", locator, n_hello, n_cmd,
-		    n_open_fail);
+	shell_print(sh, "zenoh: %s %s | hello sent %u | cmds %u | open failures %u | watchdog reconnects %u | "
+		    "last rx %lld ms ago", connected ? "connected to" : "not connected, router", locator, n_hello,
+		    n_cmd, n_open_fail, n_reconnect, (long long)(k_uptime_get() - last_rx_ms));
 	return 0;
 }
 SHELL_CMD_REGISTER(zenoh, NULL, "zenoh [locator]: status, or set the router (saved)", cmd_zenoh);

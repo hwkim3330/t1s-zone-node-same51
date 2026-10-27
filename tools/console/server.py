@@ -97,7 +97,12 @@ class Board:
         st = self.st
         if m := re.search(r'PLCA on id (\d+) count (\d+)', l):
             st['plca_id'], st['plca_count'] = int(m[1]), int(m[2])
-        if 'PLCA off' in l or 'csma' in l.lower() and l.startswith('t1s:'):
+        if l.startswith('t1s:') and 'PLCA off' in l:
+            st['plca_id'] = 'csma'
+        if m := re.match(r'plca: on, id (\d+) of (\d+)', l):          # ESP `status`
+            st['plca_id'], st['plca_count'] = int(m[1]), int(m[2])
+            st['pst'] = True if st['plca_id'] == 0 else st['pst']
+        if l.startswith('plca: off'):
             st['plca_id'] = 'csma'
         if m := re.search(r'PST=(\d)', l):
             st['pst'] = m[1] == '1'
@@ -136,9 +141,10 @@ class Board:
     def poller(self):
         time.sleep(1)
         if self.kind == 'esp':
-            self.send('status'); time.sleep(1); self.send('stat 2000')
+            # `stat` is not saved on the ESP: after any reboot it goes quiet, so ask again every time
             while True:
-                time.sleep(10); self.send('status')
+                self.send('status'); time.sleep(1); self.send('stat 2000')
+                time.sleep(10)
         else:
             self.send('net iface')
             n = 0

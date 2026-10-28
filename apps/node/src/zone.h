@@ -22,6 +22,7 @@ int64_t zone_ptp_offset_ns(void);
 /* zone_lamps.c: the vehicle as the VSS keys describe it, for the 10x10 panel; false = no car (stale) */
 struct zone_vehicle {
 	bool left, right, lit, hazard, brake, reverse, high_beam;
+	uint8_t mrm; /* vehicle/private/mrm/state: 0 none, 1 stopping, 2 stopped */
 	char gear;
 	float speed_kmh, wheel_deg, accel, brake_pedal, prox_m;
 	uint8_t mode;

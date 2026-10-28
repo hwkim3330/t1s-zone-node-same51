@@ -31,6 +31,7 @@ static uint32_t n_hello, n_cmd, n_open_fail, n_reconnect;
  * session, so a dead router or link went unnoticed. Anything we subscribe to counts as proof of life:
  * the vehicle-API sidecar sends vehicle/speed at >= 5 Hz. Nothing for WATCHDOG_MS = reconnect. */
 #define WATCHDOG_MS 15000
+#define N_SUB 11 /* subscriptions: 4 command keys + the vehicle keys this zone uses (see sub_k) */
 static volatile int64_t last_rx_ms;
 static z_owned_publisher_t pub_ack[2];
 static bool ack_ok;
@@ -186,7 +187,7 @@ static void zenoh_thread(void *a, void *b, void *c)
 
 		uint8_t id = zone_plca_id();
 		z_owned_publisher_t hello[2];
-		z_owned_subscriber_t sub[10];
+		z_owned_subscriber_t sub[N_SUB];
 		z_view_keyexpr_t k;
 		/* [v1, old] */
 		static const char *const hello_k[2] = {VAPI_ECU_STATUS, VAPI_ECU_STATUS_OLD};
@@ -195,11 +196,10 @@ static void zenoh_thread(void *a, void *b, void *c)
 		 * commands (on_cmd), then the vehicle / config keys this zone uses (on_vehicle) -- not the whole vehicle/ tree: that
 		 * brought every other zone's inputs (sticks, sensors) onto this node's receive pool as well
 		 */
-#define N_SUB 10
 		static const char *const sub_k[N_SUB] = {
 			VAPI_ECU_CMD, VAPI_ECU_CMD_OLD, VAPI_ECU_ALL_CMD, VAPI_ECU_ALL_CMD_OLD,
 			VAPI_SPEED, "vehicle/body/lights/**", "vehicle/chassis/**", VAPI_SELECTEDGEAR, VAPI_P_DRIVINGMODE,
-			"vehicle/adas/**"};
+			"vehicle/adas/**", VAPI_P_MRM_STATE};
 		static char sk[N_SUB][64];
 		bool ok = true;
 

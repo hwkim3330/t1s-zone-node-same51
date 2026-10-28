@@ -29,6 +29,7 @@ keys:
   - {key: vehicle/body/horn/isactive, type: bool, owner: vehicle, qos: data, max_age: 2000, target: true, vss: Vehicle.Body.Horn.IsActive}
   - {key: vehicle/private/drivingmode, type: u8, owner: vehicle, qos: interactive, max_age: 2000}
   - {key: vehicle/private/lights/directionindicator/left/islit, type: bool, owner: vehicle, qos: data, max_age: 2000}
+  - {key: vehicle/private/mrm/state, type: u8, owner: vehicle, qos: realtime, max_age: 1000}   # 0 none, 1 operating (stopping), 2 succeeded (stopped) -- the platform's fallback when the ADS is lost (autoware-pc-setup mrm_guard.py)
   - {key: vehicle/private/lights/directionindicator/right/islit, type: bool, owner: vehicle, qos: data, max_age: 2000}
   # ---- signals: the lamps the zones drive (owner: zone-left, the headlamp zone; both zones apply requests)
   - {key: vehicle/body/lights/beam/high/ison, type: bool, owner: zone-left, qos: data, max_age: 2000, target: true, vss: Vehicle.Body.Lights.Beam.High.IsOn, legacy: [vehicle/private/zone/lights/beam/high]}

@@ -227,6 +227,14 @@ static void lock_thread(void *a, void *b, void *c)
 		struct timeval tv = {0, 30000}, tf = {0, 5000};
 		double integ = 0, freq = 0;
 		bool stepped = false;
+		/*
+		 * The path delay is a constant of the wire (19.80 us +- 1 ns on the bench). An exchange whose delay is far
+		 * from it was mis-paired -- a missed egress capture leaves the previous frame's stamp as t1, which makes the
+		 * delay look *shorter*, so the min-delay pick chose exactly those: 14 us kicks and ~10 s of ringing on one
+		 * node (2026-10-28). Once the delay is known, such exchanges are dropped.
+		 */
+		int64_t dly_ref = INT64_MIN;
+		uint32_t n_dly_drop = 0;
 		uint32_t seq = 0x40000000u;
 
 		zsock_inet_pton(AF_INET, lock_host, &to.sin_addr);
@@ -278,6 +286,12 @@ static void lock_thread(void *a, void *b, void *c)
 					int64_t off = ((t2 - t1) + (t3 - t4)) / 2;
 					int64_t dly = ((t4 - t1) - (t3 - t2)) / 2;
 
+					if (dly_ref != INT64_MIN && (dly - dly_ref > 300 || dly_ref - dly > 300)) {
+						n_dly_drop++;
+						k_usleep(sys_rand32_get() % 1000);
+						k_msleep(54);
+						continue;
+					}
 					if (dly < best_dly) {
 						best_dly = dly;
 						best_off = off;
@@ -304,9 +318,13 @@ static void lock_thread(void *a, void *b, void *c)
 			if (!stepped) {
 				tsu_step(best_off);
 				stepped = true;
+				dly_ref = INT64_MIN; /* learnt again after the step */
 				printk("ptpl: %d step %lld ns\n", sec, (long long)best_off);
 				continue;
 			}
+			/* the reference follows the accepted delays slowly (a real cable change re-learns within ~a minute,
+			 * or at the next step) */
+			dly_ref = dly_ref == INT64_MIN ? best_dly : dly_ref + (best_dly - dly_ref) / 16;
 			integ += lock_ki * best_off;
 			freq = lock_kp * best_off + integ; /* ppb, + = node slow -> speed up */
 			freq = CLAMP(freq, -200000, 200000);
@@ -314,8 +332,8 @@ static void lock_thread(void *a, void *b, void *c)
 			ptp_last_offset_ns = best_off;
 			ptp_last_delay_ns = best_dly;
 			if (lock_secs || sec % 10 == 0) { /* for ever: one line per 10 s */
-				printk("ptpl: %d offset %lld ns delay %lld ns freq %+d ppb (%d/16)\n", sec,
-				       (long long)best_off, (long long)best_dly, (int)freq, ok);
+				printk("ptpl: %d offset %lld ns delay %lld ns freq %+d ppb (%d/16, %u mis-paired dropped)\n", sec,
+				       (long long)best_off, (long long)best_dly, (int)freq, ok, n_dly_drop);
 			}
 		}
 		zsock_close(s);

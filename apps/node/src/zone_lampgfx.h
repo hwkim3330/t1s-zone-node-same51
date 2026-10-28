@@ -26,6 +26,7 @@ typedef struct {
 	double clock_s;      /* a clock both zones share (PTP), for the marker's breathing */
 	double welcome;      /* 0..1 while the welcome sweep runs (a car appeared), -1..0 goodbye, else 2 */
 	uint8_t ess;         /* emergency stop signal: hard braking, the brake lamps flash */
+	uint8_t mrm;         /* minimal risk manoeuvre: 1 stopping (rows 4-5 flash red/amber at 2 Hz), 2 stopped (breathing) */
 } zl_state;
 
 /* lamp levels before the panel brightness (0..255); brake and turn at full, tail and DRL dimmed */
@@ -130,6 +131,26 @@ static inline void zl_lamps(zr_fb fb, int right, const zl_state *s)
 			zl_px(fb, right, x, 4, 0, (uint8_t)(200 * b), (uint8_t)(180 * b));
 			zl_px(fb, right, x, 5, 0, (uint8_t)(200 * b), (uint8_t)(180 * b));
 		}
+	}
+	/* MRM (rows 4-5, full width, over the marker): the ADS is gone and the vehicle stops itself -- a light nobody
+	 * mistakes for an indicator: red / amber alternating at 2 Hz while stopping, red breathing once stopped */
+	if (s->mrm) {
+		double ph = s->clock_s * 2.0 - (int64_t)(s->clock_s * 2.0);
+
+		for (int x = 0; x < 10; x++) {
+			uint8_t r = 255, g = 0;
+
+			if (s->mrm == 1) {
+				g = ((x / 2 + (ph < 0.5)) & 1) ? 110 : 0;
+			} else {
+				double b = 0.3 + 0.7 * (ph < 0.5 ? ph * 2 : (1 - ph) * 2);
+
+				r = (uint8_t)(255 * b);
+			}
+			zl_px(fb, right, x, 4, r, g, 0);
+			zl_px(fb, right, x, 5, r, g, 0);
+		}
+		return;
 	}
 	/* proximity warning (rows 4-5): from 1.5 m, longer and redder the nearer, from the outer edge */
 	if (s->prox_m >= 0 && s->prox_m < 1.5) {

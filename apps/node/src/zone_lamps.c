@@ -36,7 +36,7 @@ static const struct gpio_dt_spec out_left = LAMP(lamp_left), out_right = LAMP(la
 static volatile uint8_t sig_left, sig_right, sig_hazard, sig_brake, sig_rev, gear = 126;
 static volatile float v_speed, v_prox = -1;
 static volatile int16_t v_wheel;
-static volatile uint8_t v_accel, v_brake_pedal, v_mode, v_high;
+static volatile uint8_t v_accel, v_brake_pedal, v_mode, v_high, v_mrm;
 static volatile int v_view = -1;
 static volatile int64_t last_live;
 static uint32_t n_keys;
@@ -90,6 +90,8 @@ void zone_lamps_on_vss(const char *k, const uint8_t *b, size_t n)
 		v_accel = b[0];
 	} else if (!strcmp(k, VAPI_BRAKE_PEDALPOSITION)) {
 		v_brake_pedal = b[0];
+	} else if (!strcmp(k, VAPI_P_MRM_STATE)) {
+		v_mrm = b[0];
 	} else if (!strcmp(k, VAPI_P_DRIVINGMODE)) {
 		v_mode = b[0];
 	} else if (!strcmp(k, VAPI_ECU_ALL_CONFIG_DISPLAY_VIEW) || !strcmp(k, VAPI_ECU_ALL_CONFIG_DISPLAY_VIEW_OLD)) {
@@ -145,6 +147,7 @@ bool zone_vehicle(struct zone_vehicle *v)
 	v->brake_pedal = v_brake_pedal / 100.0f;
 	v->mode = v_mode;
 	v->prox_m = v_prox;
+	v->mrm = live ? v_mrm : 0;
 	return live;
 }
 

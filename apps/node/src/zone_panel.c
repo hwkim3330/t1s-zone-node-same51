@@ -414,7 +414,7 @@ static void panel_thread(void *a, void *b, void *c)
 				      .clock_s = zone_clock_s(), .welcome = welcome, .ess = now < ess_until,
 				      .turn_since = (now - (h ? lit_r : lit_l)) / 1000.0,
 				      .brake = live && v.brake, .reverse = live && v.reverse,
-				      .high_beam = live && v.high_beam, .prox_m = prox};
+				      .high_beam = live && v.high_beam, .prox_m = prox, .mrm = v.mrm};
 
 			memset(fb, 0, sizeof(zr_fb));
 			zl_lamps(fb, h, &z);

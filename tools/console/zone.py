@@ -38,6 +38,7 @@ sensors = {'stick_x': None, 'stick_y': None, 'prox_raw': None, 'prox_m': None, '
 jobs = {'update': None, 'qos': None}
 lock = threading.Lock()
 roles = {}                   # role -> node id (from the heartbeats)
+ads = {'hb': None, 'at': 0}  # ecu/ads/status: the ADS heartbeat (the sidecar publishes it, 1 Hz)
 STICK_X, STICK_Y = 'vehicle/private/cabin/stick/x', 'vehicle/private/cabin/stick/y'
 PROX_M = 'vehicle/adas/obstacledetection/rear/center/distance'
 
@@ -82,6 +83,15 @@ def _value(k, b):
     return b[0] if len(b) == 1 else None
 
 
+def _on_ads(m):
+    try:
+        h = json.loads(m.payload.to_string())
+    except ValueError:
+        return
+    with lock:
+        ads['hb'], ads['at'] = h, time.time()
+
+
 def _on_vehicle(m):
     k = str(m.key_expr)
     if k.startswith('ecu/') and k.endswith('/diag/proximity_raw'):
@@ -119,6 +129,7 @@ def start():
                     s.declare_subscriber(k, _on_hello)
                 for k in ('ecu/*/display', 't1s/*/panel'):
                     s.declare_subscriber(k, _on_panel)
+                s.declare_subscriber('ecu/ads/status', _on_ads)
                 for k in ('vehicle/**', 'ecu/*/diag/**'):
                     s.declare_subscriber(k, _on_vehicle)
                 while True:
@@ -132,7 +143,8 @@ def start():
 def state():
     now = time.time()
     with lock:
-        out = {'nodes': [], 'car': {k: v for k, v in car.items() if not k.startswith('_')},
+        out = {'ads': dict(ads['hb'] or {}, age=round(now - ads['at'], 1)) if ads['at'] else None,
+               'nodes': [], 'car': {k: v for k, v in car.items() if not k.startswith('_')},
                'car_age': round(now - car['_at'], 1) if '_at' in car else None,
                'sensors': dict(sensors, age=round(now - sensors['at'], 1) if sensors['at'] else None),
                'jobs': {k: v for k, v in jobs.items()}, 'zenoh': zenoh is not None}

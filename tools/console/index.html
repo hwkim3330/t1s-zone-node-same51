@@ -265,11 +265,17 @@ async function zoneTick() {
   try { Z = await (await fetch('/api/zone')).json(); } catch (e) { return; }
   const car = Z.car, gear = {126: 'P', 127: 'D', 0: 'N', '-1': 'R'}[car['powertrain/transmission/selectedgear']] ?? '?';
   const lamp = (on, col) => `<span class="lamp" style="background:${on ? col : 'var(--line)'}"></span>`;
-  $('#car').innerHTML = Z.car_age == null || Z.car_age > 3 ? '<span class="small">차 상태 없음 (zonelink/게이트웨이 확인)</span>' :
+  // the ADS (Autoware PC) as the vehicle sees it: its heartbeat, and the platform's MRM when it is gone
+  const A = Z.ads, adsOk = A && A.age < 3 && A.ads, mrm = car['private/mrm/state'];
+  const adsTxt = !A ? '자율주행 컴퓨터: 하트비트 없음 (사이드카 확인)' : A.age >= 3 ? `자율주행 컴퓨터: 하트비트 끊김 ${A.age}초` :
+    A.ads ? '자율주행 컴퓨터 정상' : '자율주행 컴퓨터 응답 없음 (차량 데이터 끊김)';
+  const mrmTxt = mrm === 1 ? ' · <b style="color:var(--bad)">MRM: 차로 안에서 정지 중</b>' : mrm === 2 ? ' · <b style="color:var(--bad)">MRM: 정지 완료 · 비상등</b>' : '';
+  const adsLine = `<span class="small" style="flex-basis:100%"><span class="dot" style="background:${adsOk ? 'var(--ok)' : 'var(--bad)'}"></span> ${adsTxt}${mrmTxt}</span>`;
+  $('#car').innerHTML = adsLine + (Z.car_age == null || Z.car_age > 3 ? '<span class="small">차 상태 없음 (zonelink/게이트웨이 확인)</span>' :
     `<span>기어 <b>${gear}</b></span><span><b>${(car.speed ?? 0).toFixed(1)}</b> km/h</span>
      <span>${['수동', '오토파일럿', 'Autoware'][car['private/drivingmode']] ?? ''}</span>
      <span>${lamp(car['body/lights/directionindicator/left/issignaling'], '#f59e0b')} 좌 ${lamp(car['body/lights/hazard/issignaling'], '#ef4444')} 비상 ${lamp(car['body/lights/directionindicator/right/issignaling'], '#f59e0b')} 우</span>
-     <span>${lamp(car['body/lights/brake/isactive'], '#ef4444')} 브레이크 ${lamp(car['body/lights/backup/ison'], '#fff')} 후진</span>`;
+     <span>${lamp(car['body/lights/brake/isactive'], '#ef4444')} 브레이크 ${lamp(car['body/lights/backup/ison'], '#fff')} 후진</span>`);
   const js = Z.jobs, txt = Object.entries(js).filter(([k, v]) => v).map(([k, v]) => `[${k === 'update' ? '펌웨어 업데이트' : 'PLCA 버스트 측정'}] ${v.running ? '진행 중 (' + v.started + ' 시작)' : v.finished + ' 끝'}\n${v.out || ''}`).join('\n\n');
   $('#jobs').style.display = txt ? '' : 'none'; $('#jobs').textContent = txt;
   for (const n of Z.nodes) {

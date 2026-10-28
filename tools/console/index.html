@@ -48,6 +48,21 @@ canvas.pan{border-radius:6px;background:#000;image-rendering:pixelated}
 .car b{font-size:20px}
 .lamp{width:14px;height:14px;border-radius:3px;display:inline-block;background:var(--line)}
 pre.job{height:auto;max-height:220px}
+.pk{margin-top:14px}
+.pk .h{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.pk .h .sp{flex:1}
+.pk table{width:100%;border-collapse:collapse;font-size:13px}
+.pk td,.pk th{text-align:left;padding:3px 8px}
+.pk td.n,.pk th.n{text-align:right;font-variant-numeric:tabular-nums}
+.pk .grid{display:grid;grid-template-columns:1fr 1.4fr;gap:12px;margin-top:8px}
+.pk .list{max-height:420px;overflow:auto;margin-top:8px;border:1px solid var(--line);border-radius:8px}
+.pk .list td{font:12px/1.35 ui-monospace,Menlo,monospace;border-left:0;border-right:0;vertical-align:top}
+.pk .list td{white-space:nowrap}
+.pk .list td.info{word-break:break-all;white-space:normal;width:100%}
+.pk .share{height:8px;border-radius:4px;background:var(--acc);display:block}
+.pk tr.sel td{background:color-mix(in srgb,var(--acc) 12%,transparent)}
+.pk .tag{display:inline-block;padding:0 6px;border-radius:5px;font-size:12px;border:1px solid var(--line)}
+@media (max-width:800px){.pk .grid{grid-template-columns:1fr}}
 @media (max-width:600px){header{flex-wrap:wrap}main{padding:12px 16px}}
 </style>
 </head>
@@ -71,6 +86,17 @@ pre.job{height:auto;max-height:220px}
   </div>
   <div class="zone" id="zone"></div>
   <div class="cards" id="cards"></div>
+  <div class="panel pk" id="pk">
+    <div class="h"><b>패킷</b><span class="small" id="pkst">—</span><span class="sp"></span>
+      <input id="pkf" placeholder="필터: 노드, 키, 값 (예: beam, sam4, display)" style="width:260px">
+      <button id="pkpause">일시정지</button><button id="pkws" title="같은 인터페이스를 Wireshark 로 엽니다">Wireshark 로 열기</button></div>
+    <div class="grid">
+      <div><div class="small">프로토콜 (최근 10 초) — 줄을 누르면 목록이 그것만</div><table id="pkp"></table></div>
+      <div><div class="small">누가 누구에게</div><table id="pkfl"></table></div>
+    </div>
+    <div class="list"><table id="pkl"></table></div>
+    <div class="legend">ESP 게이트웨이의 이더넷 쪽(PC USB NIC)에서 잡은 것: 노드 ↔ zenohd TCP, SMP 펌웨어, ping, ARP. PTP(UDP 5007)는 T1S 안에서만 오가므로 여기 없음. <code>#번호</code> = 캡처 시작 전에 등록된 Zenoh 키 (노드가 다시 연결하면 이름으로 보임). 바이트 = 이더넷 프레임 길이.</div>
+  </div>
 </main>
 <script>
 const $ = s => document.querySelector(s);
@@ -276,6 +302,37 @@ $('#updAll').onclick = async () => { const r = await (await fetch('/api/zone/upd
 $('#qosRun').onclick = async () => { const r = await (await fetch('/api/zone/qos', {method: 'POST', body: '{}'})).json(); if (!r.started) alert('이미 측정 중'); };
 zoneTick(); setInterval(zoneTick, 1000);
 
+
+// ---------------------------------------------------------------- packets (packets.py: dumpcap on the gateway's Ethernet side)
+let pkProto = '', pkPaused = false, pkBusy = false;
+$('#pkpause').onclick = () => { pkPaused = !pkPaused; $('#pkpause').textContent = pkPaused ? '계속' : '일시정지'; $('#pkpause').className = pkPaused ? 'pri' : ''; };
+$('#pkws').onclick = async () => { const r = await (await fetch('/api/wireshark', {method: 'POST'})).json(); if (!r.ok) alert('Wireshark 를 열지 못했습니다'); };
+$('#pkf').oninput = () => pkList();
+async function pkRates() {
+  const r = await (await fetch('/api/packets/rates')).json();
+  const st = r.status;
+  $('#pkst').textContent = st.running ? `${st.iface} · ${st.frames.toLocaleString()} 프레임 · 버스 점유 약 ${r.bus_pct} %` : `캡처 안 됨: ${st.error || '—'}`;
+  const tot = r.protos.reduce((a, p) => a + p[2], 0) || 1;
+  $('#pkp').innerHTML = '<tr><th>프로토콜</th><th class="n">프레임/s</th><th class="n">kbit/s</th><th style="width:35%">비중</th></tr>' +
+    r.protos.map(p => `<tr data-p="${esc(p[0])}" class="${pkProto === p[0] ? 'sel' : ''}" style="cursor:pointer"><td><span class="tag">${esc(p[0])}</span></td><td class="n">${p[1]}</td><td class="n">${p[2]}</td><td><span class="share" style="width:${(p[2] / tot * 100).toFixed(1)}%"></span></td></tr>`).join('');
+  for (const tr of document.querySelectorAll('#pkp tr[data-p]')) tr.onclick = () => { pkProto = pkProto === tr.dataset.p ? '' : tr.dataset.p; pkRates(); pkList(); };
+  $('#pkfl').innerHTML = '<tr><th>보낸 쪽 → 받는 쪽</th><th>프로토콜</th><th class="n">프레임/s</th><th class="n">kbit/s</th></tr>' +
+    r.flows.map(f => `<tr><td>${esc(f[0])} <span class="small">→ ${esc(f[1])}</span></td><td><span class="tag">${esc(f[2])}</span></td><td class="n">${f[3]}</td><td class="n">${f[4]}</td></tr>`).join('');
+}
+async function pkList() {
+  if (pkPaused || pkBusy) return;
+  pkBusy = true;
+  try {
+    const u = new URLSearchParams({limit: 200});
+    if (pkProto) u.set('p', pkProto);
+    if ($('#pkf').value.trim()) u.set('text', $('#pkf').value.trim());
+    const r = await (await fetch('/api/packets?' + u)).json();
+    $('#pkl').innerHTML = '<tr><th class="n">t (s)</th><th>프로토콜</th><th>보낸 쪽</th><th>받는 쪽</th><th class="n">바이트</th><th>내용</th></tr>' +
+      (r.rows.length ? r.rows.map(f => `<tr><td class="n">${f[0].toFixed(3)}</td><td><span class="tag">${esc(f[1])}</span></td><td>${esc(f[2])}</td><td>${esc(f[3])}</td><td class="n">${f[4]}</td><td class="info">${esc(f[5])}</td></tr>`).join('')
+        : '<tr><td colspan="6" class="small">맞는 패킷 없음</td></tr>');
+  } finally { pkBusy = false; }
+}
+pkRates(); pkList(); setInterval(pkRates, 2000); setInterval(pkList, 1000);
 </script>
 </body>
 </html>

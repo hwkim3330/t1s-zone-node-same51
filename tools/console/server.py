@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import serial
 
+import packets
 import zone
 
 ap = argparse.ArgumentParser()
@@ -207,6 +208,15 @@ class H(BaseHTTPRequestHandler):
             b = boards[int(q.get('i', ['0'])[0])]
             n = int(q.get('n', ['200'])[0])
             return self.reply(200, [f'{time.strftime("%T", time.localtime(t))} {l}' for t, l in b.lines[-n:]])
+        if self.path.startswith('/api/packets/rates'):
+            for n in zone.state()['nodes']:          # the node names in the list: the ECU role from its heartbeat
+                h = n.get('hello') or {}
+                if h.get('ip'):
+                    packets.names[h['ip']] = f"{h.get('role') or 'sam'} (sam{n['id']})"
+            return self.reply(200, packets.rates())
+        if self.path.startswith('/api/packets'):     # /api/packets?p=Zenoh&text=beam&limit=200
+            from urllib.parse import parse_qs, urlparse
+            return self.reply(200, packets.query(parse_qs(urlparse(self.path).query)))
         if self.path == '/api/state':
             return self.reply(200, [{'i': i, 'kind': b.kind, 'name': b.name, 'serial': b.serial,
                                      'tty': os.path.realpath(b.path), **b.st,
@@ -220,6 +230,8 @@ class H(BaseHTTPRequestHandler):
             b = boards[int(q['i'])]
             cmd = str(q['cmd'])[:120].replace('\r', '').replace('\n', '')
             return self.reply(200, {'out': b.run(cmd, float(q.get('wait', 1.5)))})
+        if self.path == '/api/wireshark':
+            return self.reply(200, {'ok': packets.wireshark()})
         if self.path == '/api/zone/update':
             return self.reply(200, {'started': zone.update_all()})
         if self.path == '/api/zone/qos':
@@ -245,6 +257,7 @@ class H(BaseHTTPRequestHandler):
 
 
 zone.start()
+packets.start()
 print(f'{len(boards)} boards:', ', '.join(f'{b.name} ({os.path.realpath(b.path)})' for b in boards))
 print(f'http://localhost:{a.port}')
 ThreadingHTTPServer(('0.0.0.0', a.port), H).serve_forever()

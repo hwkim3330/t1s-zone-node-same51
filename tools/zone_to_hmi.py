@@ -63,8 +63,14 @@ while True:
              for n in z.get('nodes', []) if n.get('id') is not None]
     s = z.get('sensors', {})
     sensors = {k: s.get(k) for k in ('stick_x', 'stick_y', 'prox_raw', 'prox_m')} if (s.get('age') or 99) < 5 else {}
+    car = z.get('car', {}) if (z.get('car_age') or 99) < 5 else {}
+    lamps = {k: int(bool(car.get(v))) for k, v in (
+        ('high', 'body/lights/beam/high/ison'), ('low', 'body/lights/beam/low/ison'),
+        ('tail', 'body/lights/parking/ison'), ('left', 'body/lights/directionindicator/left/issignaling'),
+        ('right', 'body/lights/directionindicator/right/issignaling'), ('hazard', 'body/lights/hazard/issignaling'),
+        ('brake', 'body/lights/brake/isactive'), ('ad', 'private/body/lights/automateddriving/ison'))}
     try:
-        post('/api/zone', {'nodes': nodes, 'sensors': sensors,
+        post('/api/zone', {'nodes': nodes, 'sensors': sensors, 'lamps': lamps,
                            'bus': {'gateway': 'ESP 존 게이트웨이 .65', 'note': 'PLCA 0/8 · PTP 마스터 · 10BASE-T1S'}})
     except Exception as e:
         if time.time() - last_err > 30:

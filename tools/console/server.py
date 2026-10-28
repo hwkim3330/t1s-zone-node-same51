@@ -20,6 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import serial
 
+import zone
+
 ap = argparse.ArgumentParser()
 ap.add_argument('--port', type=int, default=8830)
 a = ap.parse_args()
@@ -49,8 +51,10 @@ class Board:
         try:
             s = serial.Serial()
             s.port, s.baudrate, s.timeout = self.path, 115200, 0.2
-            # ESP: DTR/RTS low keeps it out of reset / download mode. nEDBG: forwards the UART only with DTR set.
-            s.dtr = s.rts = self.kind == 'sam'
+            # Both lines high, for both kinds. nEDBG forwards the UART only with DTR set. The ESP32-S3's USB serial
+            # resets the chip on RTS high + DTR low: the old "both low" passed through that state (pyserial sets
+            # DTR before RTS) and every console start rebooted the gateway.
+            s.dtr = s.rts = True
             s.open()
             self.s = s
             return True
@@ -191,6 +195,18 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ('/', '/index.html'):
             return self.reply(200, open(os.path.join(HERE, 'index.html'), 'rb').read(), 'text/html; charset=utf-8')
+        if self.path == '/api/zone':
+            return self.reply(200, zone.state())
+        if self.path.startswith('/icon.png'):
+            p = os.path.join(HERE, 'icon.png')
+            if os.path.exists(p):
+                return self.reply(200, open(p, 'rb').read(), 'image/png')
+        if self.path.startswith('/api/log'):           # /api/log?i=1&n=300: one board's recent console lines
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            b = boards[int(q.get('i', ['0'])[0])]
+            n = int(q.get('n', ['200'])[0])
+            return self.reply(200, [f'{time.strftime("%T", time.localtime(t))} {l}' for t, l in b.lines[-n:]])
         if self.path == '/api/state':
             return self.reply(200, [{'i': i, 'kind': b.kind, 'name': b.name, 'serial': b.serial,
                                      'tty': os.path.realpath(b.path), **b.st,
@@ -204,6 +220,10 @@ class H(BaseHTTPRequestHandler):
             b = boards[int(q['i'])]
             cmd = str(q['cmd'])[:120].replace('\r', '').replace('\n', '')
             return self.reply(200, {'out': b.run(cmd, float(q.get('wait', 1.5)))})
+        if self.path == '/api/zone/update':
+            return self.reply(200, {'started': zone.update_all()})
+        if self.path == '/api/zone/qos':
+            return self.reply(200, {'started': zone.qos()})
         if self.path == '/api/ping':               # every node pings every other node (3 each)
             res = []
             for dst in boards:                     # the PC itself, through the ESP bridge
@@ -224,6 +244,7 @@ class H(BaseHTTPRequestHandler):
         self.reply(404, {})
 
 
+zone.start()
 print(f'{len(boards)} boards:', ', '.join(f'{b.name} ({os.path.realpath(b.path)})' for b in boards))
 print(f'http://localhost:{a.port}')
 ThreadingHTTPServer(('0.0.0.0', a.port), H).serve_forever()

@@ -42,6 +42,7 @@ static uint8_t map_bits = 1;        /* serpentine rows: the usual matrix wiring 
 static float bright = 0.12f;
 static int half = -1;               /* 0 left, 1 right, -1 = from the PLCA id */
 static volatile int test_led = -1;  /* `panel test`: the LED index being shown */
+static volatile bool pattern;       /* `panel pattern on`: the orientation picture instead of the car */
 static bool have_stick, have_prox;
 static volatile uint16_t stick_x, stick_y, prox_raw;
 static uint32_t frames;
@@ -248,9 +249,41 @@ static void panel_thread(void *a, void *b, void *c)
 		} else {
 			zr_nolink(fb, tick, have_prox ? zr_prox_m(prox_raw) : -1);
 		}
+		int h = half >= 0 ? half : (zone_plca_id() & 1) ? 0 : 1;
+
+		if (pattern) {
+			/*
+			 * An orientation picture nothing symmetric can fake: red top-left corner, a green top row
+			 * pointing right (brighter to the right), a blue left column pointing down, a white dot at
+			 * (6, 3). Seen right on the LEDs = `panel map` is right.
+			 */
+			static const uint8_t R[3] = {255, 0, 0}, W[3] = {255, 255, 255};
+
+			memset(fb, 0, sizeof(zr_fb));
+			for (int x = 1; x < 10; x++) {
+				const uint8_t g[3] = {0, (uint8_t)(40 + 24 * x), 0};
+
+				zr_set(fb, 0, x + 10 * h, g);
+			}
+			for (int y = 1; y < 10; y++) {
+				const uint8_t b[3] = {0, 0, (uint8_t)(40 + 24 * y)};
+
+				zr_set(fb, y, 10 * h, b);
+			}
+			zr_set(fb, 0, 10 * h, R);
+			zr_set(fb, 3, 6 + 10 * h, W);
+		}
 		zr_scale(out, fb, bright);
 
-		int h = half >= 0 ? half : (zone_plca_id() & 1) ? 0 : 1;
+		/* this node's half, as drawn (full brightness, before the LED order), to the PC at 5 Hz */
+		if (tick % 4 == 0) {
+			static uint8_t pic[300];
+
+			for (int y = 0; y < 10; y++) {
+				memcpy(&pic[y * 30], fb[y][10 * h], 30);
+			}
+			zone_publish(ZONE_PUB_PANEL, pic, sizeof(pic));
+		}
 
 		memset(grb, 0, sizeof(grb));
 		for (int y = 0; y < 10; y++) {
@@ -275,7 +308,7 @@ static void panel_thread(void *a, void *b, void *c)
 		k_msleep(50);
 	}
 }
-K_THREAD_DEFINE(panel_tid, 2048, panel_thread, NULL, NULL, NULL, 8, 0, 0);
+K_THREAD_DEFINE(panel_tid, 4096, panel_thread, NULL, NULL, NULL, 8, 0, 0);
 
 static int cmd_panel(const struct shell *sh, size_t argc, char **argv)
 {
@@ -288,6 +321,8 @@ static int cmd_panel(const struct shell *sh, size_t argc, char **argv)
 	} else if (argc > 2 && !strcmp(argv[1], "half")) {
 		half = !strcmp(argv[2], "left") ? 0 : !strcmp(argv[2], "right") ? 1 : -1;
 		settings_save_one("panel/half", &half, sizeof(half));
+	} else if (argc > 2 && !strcmp(argv[1], "pattern")) {
+		pattern = !strcmp(argv[2], "on");
 	} else if (argc > 1 && !strcmp(argv[1], "test")) {
 		/* light chain index 0, 1, 2 ... 99, 0.15 s each, so the wiring can be read off the board */
 		for (int i = 0; i < 100; i++) {
@@ -296,12 +331,12 @@ static int cmd_panel(const struct shell *sh, size_t argc, char **argv)
 		}
 		test_led = -1;
 	}
-	shell_print(sh, "panel: %s, half %s, map %u (serpentine %u mirror-x %u mirror-y %u columns %u), bright %.2f, "
+	shell_print(sh, "panel: %s%s, half %s, map %u (serpentine %u mirror-x %u mirror-y %u columns %u), bright %.2f, "
 		    "%u frames | slot 3: %s stick %u/%u prox %u",
-		    HAS_PANEL ? "10x10 on slot 2" : "none built in",
+		    HAS_PANEL ? "10x10 on slot 2" : "none built in", pattern ? " (orientation pattern)" : "",
 		    half == 0 ? "left" : half == 1 ? "right" : "auto (PLCA id odd = left)", map_bits, map_bits & 1,
 		    (map_bits >> 1) & 1, (map_bits >> 2) & 1, (map_bits >> 3) & 1, (double)bright, frames,
 		    have_stick ? "thumbstick" : have_prox ? "proximity" : "none", stick_x, stick_y, prox_raw);
 	return 0;
 }
-SHELL_CMD_REGISTER(panel, NULL, "panel [map <bits>|bright <0.02..0.3>|half left|right|auto|test]", cmd_panel);
+SHELL_CMD_REGISTER(panel, NULL, "panel [map <bits>|bright <0.02..0.3>|half left|right|auto|pattern on|off|test]", cmd_panel);

@@ -3,6 +3,7 @@
 #   zenohd    tcp/192.168.100.51:7448   (the nodes' router; zenohd.service on 7447 is tied to the EVB's .70)
 #   zonelink  Autoware (HMI gateway :8780 on the Autoware PC) -> vehicle/** VSS keys, restarted if it dies
 #   console   http://localhost:8830
+#   zone->HMI the zone nodes to the HMI gateway (POST /api/zone), thumbstick up/down -> max speed +-5 km/h
 #   tools/bench_up.sh [stop|status]
 # Logs: ~/.cache/t1s-bench/*.log
 set -u
@@ -19,7 +20,7 @@ listening() { ss -ltn | grep -q ":$1 "; }
 pidfile_alive() { [ -f "$L/$1.pid" ] && kill -0 "$(cat "$L/$1.pid")" 2>/dev/null; }
 
 stop() {
-	for n in zonelink console zenohd; do
+	for n in zone_to_hmi zonelink console zenohd; do
 		if pidfile_alive $n; then kill "$(cat "$L/$n.pid")" && echo "stopped $n"; fi
 		rm -f "$L/$n.pid"
 	done
@@ -29,6 +30,7 @@ status() {
 	listening 7448 && echo "zenohd   up   $ROUTER" || echo "zenohd   DOWN"
 	pidfile_alive zonelink && echo "zonelink up   $GATEWAY -> $ROUTER" || echo "zonelink DOWN"
 	listening 8830 && echo "console  up   http://localhost:8830" || echo "console  DOWN"
+	pidfile_alive zone_to_hmi && echo "zone->HMI up  $GATEWAY/api/zone (+ stick -> speed limit)" || echo "zone->HMI DOWN"
 }
 
 case "${1:-up}" in
@@ -55,5 +57,10 @@ if ! listening 8830; then
 	nohup python3 -u "$R/tools/console/server.py" > "$L/console.log" 2>&1 &
 	echo $! > "$L/console.pid"
 	sleep 3
+fi
+if ! pidfile_alive zone_to_hmi; then
+	nohup bash -c "while true; do python3 -u $R/tools/zone_to_hmi.py --gateway $GATEWAY; echo \"restart \$(date +%T)\"; sleep 3; done" \
+		> "$L/zone_to_hmi.log" 2>&1 &
+	echo $! > "$L/zone_to_hmi.pid"
 fi
 status

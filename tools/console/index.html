@@ -32,6 +32,22 @@ pre{background:var(--bg);border-radius:8px;padding:8px;font:12px/1.35 ui-monospa
 table{border-collapse:collapse;font-size:13px;margin-top:8px}
 td,th{border:1px solid var(--line);padding:4px 10px;text-align:center}
 .legend{color:var(--mute);font-size:12px;margin-top:6px}
+
+.zone{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px;margin-top:14px}
+.zone h3{margin:0 0 8px;font-size:15px;display:flex;gap:8px;align-items:center}
+.zrow{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap}
+canvas.pan{border-radius:6px;background:#000;image-rendering:pixelated}
+.gauge{width:110px;height:110px;border:1px solid var(--line);border-radius:8px;position:relative;background:var(--bg)}
+.gauge i{position:absolute;width:12px;height:12px;border-radius:50%;background:var(--acc);transform:translate(-50%,-50%)}
+.bar{height:10px;border-radius:5px;background:var(--bg);overflow:hidden;border:1px solid var(--line)}
+.bar b{display:block;height:100%;background:var(--bad)}
+.small{font-size:12px;color:var(--mute)}
+.btns{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.btns button{padding:4px 9px;font-size:13px}
+.car{display:flex;gap:14px;align-items:center;flex-wrap:wrap;font-size:14px}
+.car b{font-size:20px}
+.lamp{width:14px;height:14px;border-radius:3px;display:inline-block;background:var(--line)}
+pre.job{height:auto;max-height:220px}
 @media (max-width:600px){header{flex-wrap:wrap}main{padding:12px 16px}}
 </style>
 </head>
@@ -45,6 +61,15 @@ td,th{border:1px solid var(--line);padding:4px 10px;text-align:center}
     <div class="legend">초록 = 코디네이터 비컨 들림(PST=1) · 주황 = 링크는 있으나 비컨 없음 · 빨강 = 응답 없음 · 점선 = 아직 없는 노드 · 종단은 버스 양 끝(바깥쪽 SAM)만 — 가운데 ESP 는 OFF</div>
   </div>
   <div class="panel" id="pingbox" style="margin-top:14px;display:none"><b>ping 결과</b><div id="pingres"></div></div>
+  <div class="panel" style="margin-top:14px">
+    <div class="car" id="car">차 상태 —</div>
+    <div class="btns">
+      <button id="updAll">모든 노드 펌웨어 업데이트 (T1S 너머)</button>
+      <button id="qosRun">PLCA 버스트 지연 측정 (~3 분)</button>
+    </div>
+    <pre class="job" id="jobs" style="display:none"></pre>
+  </div>
+  <div class="zone" id="zone"></div>
   <div class="cards" id="cards"></div>
 </main>
 <script>
@@ -152,6 +177,105 @@ async function tick() {
   } catch (e) { $('#sub').textContent = '서버 연결 끊김'; }
 }
 tick(); setInterval(tick, 2000);
+
+// ---------------------------------------------------------------- zone nodes (Zenoh side)
+let Z = null;
+const zmaps = [1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14];   // serpentine first: the likely wiring
+const boardFor = ip => S.find(b => b.kind === 'sam' && b.ip === ip);
+function zoneCard(n) {
+  let c = document.getElementById('z' + n.id);
+  if (!c) {
+    c = document.createElement('div'); c.className = 'panel'; c.id = 'z' + n.id;
+    c.innerHTML = `<h3><span class="dot"></span><span class="t"></span></h3>
+      <div class="zrow"><canvas class="pan" width="10" height="10" style="width:150px;height:150px"></canvas>
+        <div style="flex:1;min-width:140px"><div class="small">PTP 오프셋 (게이트웨이 기준)</div>
+          <svg class="spark" viewBox="0 0 120 40" style="width:100%;height:46px"></svg><div class="ptpv small"></div>
+          <div class="sens" style="margin-top:6px"></div></div></div>
+      <div class="btns">
+        <button data-a="pattern">LED 배치 맞추기</button><button data-a="next" hidden>다음 배치 ▶</button>
+        <button data-a="ok" hidden>이게 맞음 (저장)</button><button data-a="cancel" hidden>취소</button>
+        <button data-a="sleep">슬립</button><button data-a="wake">깨우기</button><button data-a="diag">진단</button>
+      </div><div class="small hint"></div><pre class="out" style="display:none"></pre>`;
+    c.addEventListener('click', ev => zoneAct(n.id, ev.target.dataset.a));
+    $('#zone').appendChild(c);
+  }
+  return c;
+}
+const zst = {};   // per node: map index while matching
+async function zoneAct(id, a) {
+  if (!a) return;
+  const n = Z.nodes.find(x => x.id === id), b = n && n.hello && boardFor(n.hello.ip), c = document.getElementById('z' + id);
+  if (!b) return;
+  const run = async (cmd, wait = 1.5) => (await (await fetch('/api/cmd', {method: 'POST', body: JSON.stringify({i: b.i, cmd, wait})})).json()).out.join('\n');
+  const show = (txt) => { const o = c.querySelector('.out'); o.style.display = ''; o.textContent = txt; };
+  const vis = (on) => { for (const k of ['next', 'ok', 'cancel']) c.querySelector(`[data-a=${k}]`).hidden = !on;
+                        c.querySelector('[data-a=pattern]').hidden = on; };
+  if (a === 'pattern') {
+    zst[id] = 0; await run('panel pattern on'); await run('panel map ' + zmaps[0]); vis(true);
+    c.querySelector('.hint').textContent = '실제 LED 가 왼쪽 미리보기와 같아질 때까지 "다음 배치". 빨간 점 = 왼쪽 위, 초록 줄 = 위쪽(오른쪽으로 밝아짐), 파란 줄 = 왼쪽(아래로 밝아짐), 흰 점 하나.';
+  } else if (a === 'next') {
+    zst[id] = (zst[id] + 1) % zmaps.length; await run('panel map ' + zmaps[zst[id]]);
+    c.querySelector('.hint').textContent = `배치 ${zst[id] + 1} / ${zmaps.length} (map ${zmaps[zst[id]]})`;
+  } else if (a === 'ok' || a === 'cancel') {
+    if (a === 'cancel') await run('panel map 1');
+    await run('panel pattern off'); vis(false);
+    c.querySelector('.hint').textContent = a === 'ok' ? `저장됨: map ${zmaps[zst[id]]}` : '';
+  } else if (a === 'sleep') show(await run('t1s sleep both', 2));
+  else if (a === 'wake') show(await run('t1s wake', 4));
+  else if (a === 'diag') show(await run('t1s diag', 1.5));
+}
+function drawPanel(cv, b64) {
+  const ctx = cv.getContext('2d'), img = ctx.createImageData(10, 10);
+  if (b64) { const raw = atob(b64); for (let i = 0; i < 100; i++) { img.data[i * 4] = raw.charCodeAt(i * 3); img.data[i * 4 + 1] = raw.charCodeAt(i * 3 + 1); img.data[i * 4 + 2] = raw.charCodeAt(i * 3 + 2); img.data[i * 4 + 3] = 255; } }
+  ctx.putImageData(img, 0, 0);
+}
+function spark(svg, v) {
+  if (!v.length) { svg.innerHTML = ''; return; }
+  const m = Math.max(50, ...v.map(Math.abs));
+  const pts = v.map((y, i) => `${(i / Math.max(1, v.length - 1) * 120).toFixed(1)},${(20 - y / m * 18).toFixed(1)}`).join(' ');
+  svg.innerHTML = `<line x1="0" y1="20" x2="120" y2="20" stroke="var(--line)"/><polyline fill="none" stroke="var(--acc)" stroke-width="1.5" points="${pts}"/>`;
+}
+async function zoneTick() {
+  try { Z = await (await fetch('/api/zone')).json(); } catch (e) { return; }
+  const car = Z.car, gear = {126: 'P', 127: 'D', 0: 'N', '-1': 'R'}[car['powertrain/transmission/selectedgear']] ?? '?';
+  const lamp = (on, col) => `<span class="lamp" style="background:${on ? col : 'var(--line)'}"></span>`;
+  $('#car').innerHTML = Z.car_age == null || Z.car_age > 3 ? '<span class="small">차 상태 없음 (zonelink/게이트웨이 확인)</span>' :
+    `<span>기어 <b>${gear}</b></span><span><b>${(car.speed ?? 0).toFixed(1)}</b> km/h</span>
+     <span>${['수동', '오토파일럿', 'Autoware'][car['private/drivingmode']] ?? ''}</span>
+     <span>${lamp(car['body/lights/directionindicator/left/issignaling'], '#f59e0b')} 좌 ${lamp(car['body/lights/hazard/issignaling'], '#ef4444')} 비상 ${lamp(car['body/lights/directionindicator/right/issignaling'], '#f59e0b')} 우</span>
+     <span>${lamp(car['body/lights/brake/isactive'], '#ef4444')} 브레이크 ${lamp(car['body/lights/backup/ison'], '#fff')} 후진</span>`;
+  const js = Z.jobs, txt = Object.entries(js).filter(([k, v]) => v).map(([k, v]) => `[${k === 'update' ? '펌웨어 업데이트' : 'PLCA 버스트 측정'}] ${v.running ? '진행 중 (' + v.started + ' 시작)' : v.finished + ' 끝'}\n${v.out || ''}`).join('\n\n');
+  $('#jobs').style.display = txt ? '' : 'none'; $('#jobs').textContent = txt;
+  for (const n of Z.nodes) {
+    if (n.id == null) continue;
+    const c = zoneCard(n), h = n.hello || {};
+    const live = n.hello_age < 5;
+    c.querySelector('.dot').style.background = !live ? 'var(--bad)' : h.ptp_ns == null ? 'var(--warn)' : 'var(--ok)';
+    c.querySelector('.t').textContent = `존 노드 sam${n.id} · ${h.ip ?? '?'} · 가동 ${h.up ?? '?'} s`;
+    drawPanel(c.querySelector('canvas'), n.panel);
+    spark(c.querySelector('.spark'), n.ptp_hist);
+    c.querySelector('.ptpv').textContent = h.ptp_ns == null ? '잠금 안 됨' : `지금 ${h.ptp_ns} ns · σ ${n.ptp_sd ?? '—'} ns (최근 2 분)`;
+    const s = Z.sensors, sens = c.querySelector('.sens');
+    // the sensors are published without a node id: show each on the node whose board reports that click
+    const b = boardFor(h.ip), kind = b && b.slot3;
+    sens.innerHTML = '';
+  }
+  // sensors: one block under the cards
+  const s = Z.sensors;
+  let sb = document.getElementById('sensbox');
+  if (!sb) { sb = document.createElement('div'); sb.className = 'panel'; sb.id = 'sensbox'; $('#zone').appendChild(sb); }
+  const gx = s.stick_x == null ? 50 : s.stick_x / 40.95, gy = s.stick_y == null ? 50 : 100 - s.stick_y / 40.95;
+  const pm = s.prox_m == null ? 2 : s.prox_m;
+  sb.innerHTML = `<h3>입력 클릭 (슬롯 3)</h3><div class="zrow">
+    <div><div class="small">조이스틱 ${s.stick_x ?? '—'} / ${s.stick_y ?? '—'}</div><div class="gauge"><i style="left:${gx}%;top:${gy}%"></i></div></div>
+    <div style="flex:1;min-width:150px"><div class="small">근접 ${s.prox_raw ?? '—'} (≈ ${pm.toFixed(2)} m)</div>
+      <div class="bar"><b style="width:${Math.max(0, Math.min(100, (1 - Math.min(pm, 1)) * 100))}%"></b></div>
+      <div class="small" style="margin-top:6px">${s.age == null ? '입력 없음' : s.age < 3 ? '실시간' : s.age + ' s 전'}</div></div></div>`;
+}
+$('#updAll').onclick = async () => { const r = await (await fetch('/api/zone/update', {method: 'POST', body: '{}'})).json(); if (!r.started) alert('업데이트를 시작할 수 없음 (진행 중이거나 노드/이미지 없음)'); };
+$('#qosRun').onclick = async () => { const r = await (await fetch('/api/zone/qos', {method: 'POST', body: '{}'})).json(); if (!r.started) alert('이미 측정 중'); };
+zoneTick(); setInterval(zoneTick, 1000);
+
 </script>
 </body>
 </html>

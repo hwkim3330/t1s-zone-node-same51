@@ -443,8 +443,19 @@ SHELL_STATIC_SUBCMD_SET_CREATE(t1s_cmds,
 	SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(t1s, &t1s_cmds, "10BASE-T1S node", NULL);
 
+/* RSTC.RCAUSE (SAM D5x/E5x, 0x40000C00): why the chip last reset, for the boot log and the heartbeat */
+uint8_t zone_reset_cause;
+
+static const char *reset_cause_str(uint8_t r)
+{
+	return (r & BIT(5)) ? "watchdog" : (r & BIT(6)) ? "software" : (r & BIT(4)) ? "external (reset pin / debugger)"
+	     : (r & BIT(0)) ? "power-on" : (r & (BIT(1) | BIT(2))) ? "brown-out" : (r & BIT(3)) ? "NVM" : "?";
+}
+
 int main(void)
 {
+	zone_reset_cause = *(volatile uint8_t *)0x40000C00;
+	LOG_INF("reset cause 0x%02x: %s", zone_reset_cause, reset_cause_str(zone_reset_cause));
 	gpio_pin_configure_dt(&led, GPIO_OUTPUT_INACTIVE);
 
 	if (!device_is_ready(t1s)) {

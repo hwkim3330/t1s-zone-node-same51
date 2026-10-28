@@ -33,7 +33,8 @@ static bool ack_ok;
 /* the zone's sensors, on the keys the ESP zone controller uses (the vehicle-API sidecar forwards external/...) */
 static const char *const sensor_keys[ZONE_PUB_COUNT] = {
 	"vehicle/private/zone/stick/x", "vehicle/private/zone/stick/y",
-	"vehicle/private/zone/proximity/raw", "vehicle/private/external/proximity_rear"};
+	"vehicle/private/zone/proximity/raw", "vehicle/private/external/proximity_rear",
+	"t1s/sam%u/panel" /* this node's 10x10 picture, 300 B RGB row-major, as drawn (before `panel map`) */};
 static z_owned_publisher_t pub_sensor[ZONE_PUB_COUNT];
 static volatile bool sensors_ok;
 static K_MUTEX_DEFINE(pub_lock);
@@ -172,7 +173,10 @@ static void zenoh_thread(void *a, void *b, void *c)
 		z_declare_subscriber(z_session_loan(&s), &sub3, z_view_keyexpr_loan(&k), z_closure_sample_move(&c3), NULL);
 
 		for (int i = 0; i < ZONE_PUB_COUNT; i++) {
-			z_view_keyexpr_from_str_unchecked(&k, sensor_keys[i]);
+			static char pk[ZONE_PUB_COUNT][40];
+
+			snprintf(pk[i], sizeof(pk[i]), sensor_keys[i], id);
+			z_view_keyexpr_from_str_unchecked(&k, pk[i]);
 			z_declare_publisher(z_session_loan(&s), &pub_sensor[i], z_view_keyexpr_loan(&k), NULL);
 		}
 		sensors_ok = true;
@@ -193,8 +197,8 @@ static void zenoh_thread(void *a, void *b, void *c)
 				snprintf(ptp, sizeof(ptp), "%lld", (long long)po);
 			}
 			snprintf(msg, sizeof(msg),
-				 "{\"id\":%u,\"ip\":\"%s\",\"up\":%u,\"pst\":%d,\"cmds\":%u,\"ptp_ns\":%s}", id, ip,
-				 (unsigned)(k_uptime_get() / 1000), zone_bus_up(), n_cmd, ptp);
+				 "{\"id\":%u,\"ip\":\"%s\",\"up\":%u,\"pst\":%d,\"cmds\":%u,\"ptp_ns\":%s,\"rst\":%u}", id, ip,
+				 (unsigned)(k_uptime_get() / 1000), zone_bus_up(), n_cmd, ptp, zone_reset_cause);
 			z_bytes_copy_from_str(&pl, msg);
 			if (z_publisher_put(z_publisher_loan(&hello), z_bytes_move(&pl), NULL) < 0 ||
 			    z_session_is_closed(z_session_loan(&s))) {

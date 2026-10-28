@@ -203,8 +203,10 @@ static void panel_thread(void *a, void *b, void *c)
 {
 	static zr_fb fb, out;
 	static uint8_t grb[300];
-	int64_t lit_l = 0, lit_r = 0;
-	bool was_l = false, was_r = false;
+	int64_t lit_l = 0, lit_r = 0, live_at = -10000, gone_at = -10000;
+	bool was_l = false, was_r = false, was_live = false;
+	float last_speed = 0;
+	int64_t last_speed_at = 0, ess_until = 0;
 
 	k_msleep(1500);
 	probe_inputs();
@@ -277,9 +279,29 @@ static void panel_thread(void *a, void *b, void *c)
 		was_r = r;
 		double prox = have_prox ? zr_prox_m(prox_raw) : (v.prox_m >= 0 ? v.prox_m : -1);
 
+		if (live && !was_live) {
+			live_at = now;
+		} else if (!live && was_live) {
+			gone_at = now;
+		}
+		was_live = live;
+		/* emergency stop signal: braking and losing more than 6 m/s^2 (21.6 km/h per s), held 1 s */
+		if (live && now - last_speed_at >= 200) {
+			float dv = (last_speed - v.speed_kmh) / 3.6f / ((now - last_speed_at) / 1000.0f);
+
+			if (v.brake && last_speed_at && dv > 6.0f && v.speed_kmh > 10) {
+				ess_until = now + 1000;
+			}
+			last_speed = v.speed_kmh;
+			last_speed_at = now;
+		}
+		double welcome = now - live_at < 800 ? (now - live_at) / 800.0
+			       : now - gone_at < 800 ? -(1.0 - (now - gone_at) / 800.0) : 2;
+
 		if (lamp_mode) {
 			/* this zone's lamps: the left zone (h 0) takes the left indicator, the right zone the right one */
-			zl_state z = {.live = live, .turn_lit = h ? r : l,
+			zl_state z = {.live = live, .turn_lit = h ? r : l, .autonomous = live && v.mode == 2,
+				      .clock_s = zone_clock_s(), .welcome = welcome, .ess = now < ess_until,
 				      .turn_since = (now - (h ? lit_r : lit_l)) / 1000.0,
 				      .brake = live && v.brake, .reverse = live && v.reverse,
 				      .high_beam = live && v.high_beam, .prox_m = prox};

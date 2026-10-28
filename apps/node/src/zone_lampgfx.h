@@ -22,6 +22,10 @@ typedef struct {
 	double turn_since;   /* seconds since it lit (the sweep) */
 	uint8_t brake, reverse, high_beam;
 	double prox_m;       /* < 0 or >= 1.5: no warning */
+	uint8_t autonomous;  /* the automated driving system drives: the turquoise marker lamp (SAE J3134) */
+	double clock_s;      /* a clock both zones share (PTP), for the marker's breathing */
+	double welcome;      /* 0..1 while the welcome sweep runs (a car appeared), -1..0 goodbye, else 2 */
+	uint8_t ess;         /* emergency stop signal: hard braking, the brake lamps flash */
 } zl_state;
 
 /* lamp levels before the panel brightness (0..255); brake and turn at full, tail and DRL dimmed */
@@ -61,6 +65,20 @@ static inline void zl_lamps(zr_fb fb, int right, const zl_state *s)
 			zl_px(fb, right, x, y, 0, 0, 0);
 		}
 	}
+	if (s->welcome >= -1 && s->welcome < 1) {
+		/* welcome (0..1): light opens from the inner edge outward; goodbye (-1..0): it closes again */
+		double f = s->welcome >= 0 ? s->welcome : -s->welcome;
+		int n = (int)(f * 10.0 + 0.5);
+
+		for (int y = 0; y < 10; y++) {
+			for (int x = 9; x >= 10 - n; x--) {
+				uint8_t w = (uint8_t)(40 + 20 * (9 - x) / 9);
+
+				zl_px(fb, right, x, y, w, w, w);
+			}
+		}
+		return;
+	}
 	if (!s->live) {
 		/* no car: a dim dashed line through the middle, so a stale picture never looks live */
 		for (int x = 0; x < 10; x += 2) {
@@ -80,10 +98,13 @@ static inline void zl_lamps(zr_fb fb, int right, const zl_state *s)
 			zl_px(fb, right, x, y, v, v, (uint8_t)(s->high_beam ? 255 : v));
 		}
 	}
-	/* rear combination lamp: tail always, brake bright over it, reverse on the inner side of the bottom row */
+	/* rear combination lamp: tail always, brake bright over it (flashing at 4 Hz as the emergency stop signal),
+	 * reverse on the inner side of the bottom row */
+	const int brake_on = s->brake && !(s->ess && ((int)(s->clock_s * 8) & 1));
+
 	for (int y = 7; y <= 8; y++) {
 		for (int x = 0; x < 10; x++) {
-			uint8_t v = s->brake ? ZL_BRAKE : ZL_TAIL;
+			uint8_t v = brake_on ? ZL_BRAKE : ZL_TAIL;
 
 			zl_px(fb, right, x, y, v, 0, 0);
 		}
@@ -92,13 +113,23 @@ static inline void zl_lamps(zr_fb fb, int right, const zl_state *s)
 		if (s->reverse && x >= 6) {
 			zl_px(fb, right, x, 9, ZL_REV, ZL_REV, ZL_REV);
 		} else {
-			zl_px(fb, right, x, 9, s->brake ? ZL_BRAKE / 2 : ZL_TAIL / 2, 0, 0);
+			zl_px(fb, right, x, 9, brake_on ? ZL_BRAKE / 2 : ZL_TAIL / 2, 0, 0);
 		}
 	}
 	/* sequential indicators, front (row 3) and rear (row 6), amber */
 	if (s->turn_lit) {
 		zl_sweep(fb, right, 3, s->turn_since, ZL_TURN, 120, 0);
 		zl_sweep(fb, right, 6, s->turn_since, ZL_TURN, 120, 0);
+	}
+	/* automated driving marker (rows 4-5, inner half): turquoise, breathing every 2 s on the shared clock */
+	if (s->autonomous && !(s->prox_m >= 0 && s->prox_m < 1.5)) {
+		double ph = s->clock_s / 2.0 - (int64_t)(s->clock_s / 2.0);
+		double b = 0.35 + 0.65 * (ph < 0.5 ? ph * 2 : (1 - ph) * 2);
+
+		for (int x = 3; x < 10; x++) {
+			zl_px(fb, right, x, 4, 0, (uint8_t)(200 * b), (uint8_t)(180 * b));
+			zl_px(fb, right, x, 5, 0, (uint8_t)(200 * b), (uint8_t)(180 * b));
+		}
 	}
 	/* proximity warning (rows 4-5): from 1.5 m, longer and redder the nearer, from the outer edge */
 	if (s->prox_m >= 0 && s->prox_m < 1.5) {

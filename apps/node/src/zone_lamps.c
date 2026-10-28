@@ -98,6 +98,21 @@ void zone_lamps_on_vss(const char *k, const uint8_t *b, size_t n)
 	}
 }
 
+/* seconds on the PTP clock (shared by the locked zones), or uptime without one */
+double zone_clock_s(void)
+{
+	static const struct device *clk;
+	struct net_ptp_time t;
+
+	if (!clk) {
+		clk = net_eth_get_ptp_clock(net_if_get_default());
+	}
+	if (clk && ptp_clock_get(clk, &t) == 0) {
+		return (double)(t.second % 100000) + t.nanosecond / 1e9;
+	}
+	return k_uptime_get() / 1000.0;
+}
+
 bool zone_vehicle(struct zone_vehicle *v)
 {
 	bool live = last_live && k_uptime_get() - last_live < STALE_MS;

@@ -1,6 +1,7 @@
 #!/bin/bash
 # Bring up the bench PC side of the T1S zone bus, idempotently (run it again any time):
-#   zenohd    tcp/192.168.100.51:7448   (the nodes' router; zenohd.service on 7447 is tied to the EVB's .70)
+#   zenohd    tcp/192.168.100.51:7448   (the nodes' router; zenohd.service on 7447 is tied to the EVB's .70),
+#             api/zenohd.json5: latest-value storage on vehicle/** + ecu/** (Vehicle API), REST :8834
 #   zonelink  Autoware (HMI gateway :8780 on the Autoware PC) -> vehicle/** VSS keys, restarted if it dies
 #   console   http://localhost:8830
 #   zone->HMI the zone nodes to the HMI gateway (POST /api/zone), thumbstick up/down -> max speed +-5 km/h
@@ -41,7 +42,7 @@ esac
 ip -br addr | grep -q "192.168.100.51/" || echo "warning: no interface has 192.168.100.51 (the USB NIC to the ESP gateway)"
 
 if ! listening 7448; then
-	nohup "$ZENOHD" --listen "$ROUTER" --no-multicast-scouting > "$L/zenohd.log" 2>&1 &
+	nohup "$ZENOHD" -c "$R/api/zenohd.json5" > "$L/zenohd.log" 2>&1 &
 	echo $! > "$L/zenohd.pid"
 	sleep 2
 fi

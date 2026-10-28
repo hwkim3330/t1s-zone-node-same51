@@ -1,0 +1,51 @@
+# Vehicle API v1 key table (docs/VEHICLE_API.md) -- the one place keys, types, owners and QoS are written.
+# tools/apigen.py generates from it: apps/node/src/vehicle_api.h (the zone nodes), tools/vehicle_api.py (console,
+# bridges, sidecar), docs/VEHICLE_API_KEYS.md. Later this moves into the signal catalogue (elite-t1s-hat catalog/).
+#
+#   key       full Zenoh key; "{ecu}" = the ECU's role name
+#   type      bool | u8 | i8 | u16 | i16 | f32 | json | bytes   (scalars: one little-endian value; bool = u8 0/1)
+#   unit      physical unit (VSS 6.1's where the path is VSS)
+#   owner     the only publisher of the key (vehicle = the vehicle-API sidecar from Autoware / the simulator)
+#   qos       realtime | interactive | data | background   (QoS mapper classes -> Zenoh priority -> PCP)
+#   max_age   ms; older = stale (0 = an event, no age)
+#   target    true: requests go to <key>/target
+#   vss       the VSS 6.1 path, when it is one (else: overlay)
+#   legacy    the keys this replaces, published / accepted as well during the migration
+api: vehicle-api
+version: 1
+vss: "6.1"
+keys:
+  # ---- signals: the vehicle (owner: the sidecar, from Autoware / the simulator)
+  - {key: vehicle/speed, type: f32, unit: km/h, owner: vehicle, qos: interactive, max_age: 1000, vss: Vehicle.Speed}
+  - {key: vehicle/powertrain/transmission/selectedgear, type: i8, owner: vehicle, qos: interactive, max_age: 2000, target: true, vss: Vehicle.Powertrain.Transmission.SelectedGear}
+  - {key: vehicle/chassis/steeringwheel/angle, type: i16, unit: degrees, owner: vehicle, qos: interactive, max_age: 1000, vss: Vehicle.Chassis.SteeringWheel.Angle}
+  - {key: vehicle/chassis/accelerator/pedalposition, type: u8, unit: percent, owner: vehicle, qos: interactive, max_age: 1000, vss: Vehicle.Chassis.Accelerator.PedalPosition}
+  - {key: vehicle/chassis/brake/pedalposition, type: u8, unit: percent, owner: vehicle, qos: interactive, max_age: 1000, vss: Vehicle.Chassis.Brake.PedalPosition}
+  - {key: vehicle/body/lights/directionindicator/left/issignaling, type: bool, owner: vehicle, qos: data, max_age: 2000, target: true, vss: Vehicle.Body.Lights.DirectionIndicator.Left.IsSignaling}
+  - {key: vehicle/body/lights/directionindicator/right/issignaling, type: bool, owner: vehicle, qos: data, max_age: 2000, target: true, vss: Vehicle.Body.Lights.DirectionIndicator.Right.IsSignaling}
+  - {key: vehicle/body/lights/hazard/issignaling, type: bool, owner: vehicle, qos: data, max_age: 2000, target: true, vss: Vehicle.Body.Lights.Hazard.IsSignaling}
+  - {key: vehicle/body/lights/brake/isactive, type: bool, owner: vehicle, qos: realtime, max_age: 2000, vss: Vehicle.Body.Lights.Brake.IsActive}
+  - {key: vehicle/body/lights/backup/ison, type: bool, owner: vehicle, qos: data, max_age: 2000, vss: Vehicle.Body.Lights.Backup.IsOn}
+  - {key: vehicle/body/horn/isactive, type: bool, owner: vehicle, qos: data, max_age: 2000, target: true, vss: Vehicle.Body.Horn.IsActive}
+  - {key: vehicle/private/drivingmode, type: u8, owner: vehicle, qos: interactive, max_age: 2000}
+  - {key: vehicle/private/lights/directionindicator/left/islit, type: bool, owner: vehicle, qos: data, max_age: 2000}
+  - {key: vehicle/private/lights/directionindicator/right/islit, type: bool, owner: vehicle, qos: data, max_age: 2000}
+  # ---- signals: the lamps the zones drive (owner: zone-left, the headlamp zone; both zones apply requests)
+  - {key: vehicle/body/lights/beam/high/ison, type: bool, owner: zone-left, qos: data, max_age: 2000, target: true, vss: Vehicle.Body.Lights.Beam.High.IsOn, legacy: [vehicle/private/zone/lights/beam/high]}
+  - {key: vehicle/body/lights/beam/low/ison, type: bool, owner: zone-left, qos: data, max_age: 2000, vss: Vehicle.Body.Lights.Beam.Low.IsOn}
+  - {key: vehicle/body/lights/running/ison, type: bool, owner: zone-left, qos: data, max_age: 2000, vss: Vehicle.Body.Lights.Running.IsOn}
+  - {key: vehicle/body/lights/parking/ison, type: bool, owner: zone-left, qos: data, max_age: 2000, vss: Vehicle.Body.Lights.Parking.IsOn}
+  - {key: vehicle/private/body/lights/automateddriving/ison, type: bool, owner: zone-left, qos: data, max_age: 2000}
+  # ---- signals: zone inputs
+  - {key: vehicle/private/cabin/stick/x, type: u16, owner: zone-right, qos: interactive, max_age: 500, legacy: [vehicle/private/zone/stick/x]}
+  - {key: vehicle/private/cabin/stick/y, type: u16, owner: zone-right, qos: interactive, max_age: 500, legacy: [vehicle/private/zone/stick/y]}
+  - {key: vehicle/adas/obstacledetection/rear/center/distance, type: f32, unit: m, owner: zone-left, qos: realtime, max_age: 500, vss: Vehicle.ADAS.ObstacleDetection.Rear.Center.Distance, legacy: [vehicle/private/external/proximity_rear]}
+  - {key: vehicle/adas/obstacledetection/rear/center/iswarning, type: bool, owner: zone-left, qos: realtime, max_age: 500, vss: Vehicle.ADAS.ObstacleDetection.Rear.Center.IsWarning}
+  # ---- ECUs (one entry per topic; {ecu} = zone-left, zone-right, zone-gw, ...)
+  - {key: "ecu/{ecu}/status", type: json, owner: "{ecu}", qos: background, max_age: 3000, legacy: ["t1s/sam{id}/hello"]}
+  - {key: "ecu/{ecu}/display", type: bytes, owner: "{ecu}", qos: background, max_age: 1000, legacy: ["t1s/sam{id}/panel"]}
+  - {key: "ecu/{ecu}/diag/proximity_raw", type: u16, owner: "{ecu}", qos: background, max_age: 500, legacy: [vehicle/private/zone/proximity/raw]}
+  - {key: "ecu/{ecu}/cmd", type: json, owner: any, qos: interactive, max_age: 0, legacy: ["t1s/sam{id}/cmd"]}
+  - {key: "ecu/{ecu}/cmd/ack", type: json, owner: "{ecu}", qos: interactive, max_age: 0, legacy: ["t1s/sam{id}/ack"]}
+  - {key: ecu/all/cmd, type: json, owner: any, qos: interactive, max_age: 0, legacy: [t1s/all/cmd]}
+  - {key: ecu/all/config/display_view, type: u8, owner: zone-right, qos: data, max_age: 0, legacy: [vehicle/private/zone/panel/view]}

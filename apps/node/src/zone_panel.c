@@ -26,6 +26,7 @@
 #include <zephyr/logging/log.h>
 #include <cmsis_core.h>
 #include "zone.h"
+#include "vehicle_api.h"
 #include "zone_render.h"
 #include "zone_lampgfx.h"
 #include "t1s_diag.h"
@@ -54,6 +55,12 @@ static volatile uint16_t stick_x, stick_y, prox_raw;
 static uint32_t frames;
 static uint8_t lamp_mode = 1;      /* 1 = the zone's lamps (zone_lampgfx.h), 0 = the cluster picture */
 static uint8_t beam_on;
+
+/* the ECU's role on the Vehicle API (ecu/<role>/...): which side of the car this zone is */
+const char *zone_role(void)
+{
+	return (half >= 0 ? half : (zone_plca_id() & 1) ? 0 : 1) ? "zone-right" : "zone-left";
+}
 static uint8_t view;               /* the stick node's panel view for every zone (left flick toggles it) */            /* the stick node's high beam (right flick toggles it) */
 
 static int panel_set(const char *key, size_t len, settings_read_cb read, void *arg)
@@ -266,6 +273,8 @@ static void panel_thread(void *a, void *b, void *c)
 				if (ready && x >= 3700) {
 					last_flick = now;
 					beam_on = !beam_on;
+					/* to this node's own lamps too: zenohd does not echo a session's own puts back */
+					zone_lamps_on_vss(VAPI_LIGHT_BEAM_HIGH_ISON_TARGET, &beam_on, 1);
 					LOG_INF("stick flick right: high beam %s", beam_on ? "on" : "off");
 				} else if (ready && x <= 400) {
 					last_flick = now;
@@ -276,7 +285,9 @@ static void panel_thread(void *a, void *b, void *c)
 				stick_y = y;
 				zone_publish(ZONE_PUB_STICK_X, (const void *)&stick_x, 2);
 				zone_publish(ZONE_PUB_STICK_Y, (const void *)&stick_y, 2);
-				zone_publish(ZONE_PUB_BEAM, &beam_on, 1); /* 20 Hz like the stick: a late joiner sees it at once */
+				/* the high beam belongs to the headlamp zone (zone-left): the stick only asks, on .../target
+				 * (20 Hz like the stick: a late joiner sees it at once) */
+				zone_publish(ZONE_PUB_BEAM, &beam_on, 1);
 				zone_publish(ZONE_PUB_VIEW, &view, 1);
 			}
 		}
@@ -290,6 +301,9 @@ static void panel_thread(void *a, void *b, void *c)
 				prox_raw = r;
 				zone_publish(ZONE_PUB_PROX_RAW, (const void *)&prox_raw, 2);
 				zone_publish(ZONE_PUB_PROX_M, &m, 4);
+				uint8_t warn = m < PROX_WARN_M; /* what the lamps show: the warning bar from 1.5 m */
+
+				zone_publish(ZONE_PUB_PROX_WARN, &warn, 1);
 			}
 		}
 
@@ -308,7 +322,7 @@ static void panel_thread(void *a, void *b, void *c)
 		}
 		was_l = l;
 		was_r = r;
-		double prox = have_prox ? zr_prox_m(prox_raw) : (v.prox_m >= 0 ? v.prox_m : -1);
+		double prox = have_prox ? zr_prox_m(prox_raw) : (v.prox_m >= 0 ? (double)v.prox_m : -1.0);
 
 		if (live && !was_live) {
 			live_at = now;

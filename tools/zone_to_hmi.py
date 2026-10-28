@@ -58,6 +58,7 @@ while True:
         continue
     nodes = [{'id': n['id'], 'ip': (n['hello'] or {}).get('ip'), 'up': (n['hello'] or {}).get('up'),
               'ptp_ns': (n['hello'] or {}).get('ptp_ns'), 'ptp_sd': n.get('ptp_sd'),
+              'role': (n['hello'] or {}).get('role'), 'api': (n['hello'] or {}).get('api'),
               'alive': n['hello_age'] is not None and n['hello_age'] < 5, 'panel': n.get('panel')}
              for n in z.get('nodes', []) if n.get('id') is not None]
     s = z.get('sensors', {})

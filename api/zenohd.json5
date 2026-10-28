@@ -1,0 +1,17 @@
+// The bench router (tools/bench_up.sh): the nodes' zenohd plus the Vehicle API's latest-value storage --
+// `get vehicle/**` / `get ecu/**` answer with the last sample of every key (VEHICLE_API.md, "signals" plane);
+// freshness is the reader's job, against max_age in api/vehicle_api.yaml. REST on :8834 for curl / the console.
+{
+  listen: { endpoints: ["tcp/192.168.100.51:7448"] },
+  scouting: { multicast: { enabled: false } },
+  plugins_loading: { enabled: true, search_dirs: ["/opt/zenoh/1.10.1"] },
+  plugins: {
+    rest: { http_port: 8834 },
+    storage_manager: {
+      storages: {
+        vehicle: { key_expr: "vehicle/**", volume: "memory" },
+        ecu: { key_expr: "ecu/**", volume: "memory" },
+      },
+    },
+  },
+}

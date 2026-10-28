@@ -53,6 +53,9 @@ while time.time() < t_end:
             if len(o) < len(recent):
                 problems.append((time.strftime('%T'), 'not locked in %d/%d hellos' % (len(recent) - len(o), len(recent))))
         lamps = ' '.join(cmd(i, 'lamps'))
+        if 'live' not in lamps:     # the console's own polling can interleave with ours on the shell: ask again
+            time.sleep(2)
+            lamps = ' '.join(cmd(i, 'lamps'))
         if 'live' not in lamps:
             problems.append((time.strftime('%T'), 'lamps: ' + lamps[-80:]))
         mem = ' '.join(cmd(i, 'net mem'))

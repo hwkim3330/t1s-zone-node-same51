@@ -2,10 +2,13 @@
 heartbeat, picture and sensor reading of every node, the vehicle state the nodes are drawing, and runs the
 long actions (firmware update over T1S, PLCA burst measurement) in the background.
 
-    t1s/sam<id>/hello   {"id","ip","up","pst","cmds","ptp_ns"}      1 Hz
-    t1s/sam<id>/panel   300 B RGB, this node's 10x10 half as drawn    5 Hz
-    vehicle/private/zone/stick/x|y, .../proximity/raw (u16), vehicle/private/external/proximity_rear (f32 m)
+    ecu/<role>/status   {"id","ip","up","pst","cmds","ptp_ns","role","api"}   1 Hz   (old: t1s/sam<id>/hello)
+    ecu/<role>/display  300 B RGB, this node's 10x10 half as drawn            5 Hz   (old: t1s/sam<id>/panel)
+    vehicle/private/cabin/stick/x|y (u16), ecu/<role>/diag/proximity_raw (u16),
+    vehicle/adas/obstacledetection/rear/center/distance (f32 m)                       (old: vehicle/private/zone/...)
     vehicle/** (VSS)    the car, from the vehicle-API sidecar
+Keys and types from tools/vehicle_api.py (generated from api/vehicle_api.yaml); old and v1 keys are both taken
+during the migration (docs/VEHICLE_API.md), so old and new firmware show the same.
 """
 import base64
 import json
@@ -14,7 +17,11 @@ import struct
 import subprocess
 import threading
 import time
+import sys
 from collections import deque
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+import vehicle_api as api  # noqa: E402
 
 try:
     import zenoh
@@ -23,15 +30,16 @@ except ImportError:          # the console still runs on the serial side without
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 ROUTER = os.environ.get('ZONE_ROUTER', 'tcp/192.168.100.51:7448')
-IMAGE = os.path.join(ROOT, 'build/node-g/node/zephyr/zephyr.signed.bin')
+IMAGE = os.path.join(ROOT, 'build/node-api/node/zephyr/zephyr.signed.bin')
 
 nodes = {}                   # id -> dict
 car = {}                     # VSS key below vehicle/ -> value
 sensors = {'stick_x': None, 'stick_y': None, 'prox_raw': None, 'prox_m': None, 'at': 0}
 jobs = {'update': None, 'qos': None}
 lock = threading.Lock()
-VSS_FMT = {'speed': '<f', 'powertrain/transmission/selectedgear': '<b', 'chassis/steeringwheel/angle': '<h',
-           'private/drivingmode': '<B'}
+roles = {}                   # role -> node id (from the heartbeats)
+STICK_X, STICK_Y = 'vehicle/private/cabin/stick/x', 'vehicle/private/cabin/stick/y'
+PROX_M = 'vehicle/adas/obstacledetection/rear/center/distance'
 
 
 def _node(i):
@@ -47,39 +55,53 @@ def _on_hello(m):
     with lock:
         n = _node(h.get('id'))
         n['hello'], n['hello_at'] = h, time.time()
+        if h.get('role'):
+            roles[h['role']] = h.get('id')
         if h.get('ptp_ns') is not None:
             n['ptp'].append(h['ptp_ns'])
 
 
 def _on_panel(m):
-    k = str(m.key_expr)            # t1s/sam<id>/panel
+    k = str(m.key_expr).split('/')   # ecu/<role>/display or t1s/sam<id>/panel
     try:
-        i = int(k.split('/')[1][3:])
-    except ValueError:
+        i = roles[k[1]] if k[0] == 'ecu' else int(k[1][3:])
+    except (KeyError, ValueError):
         return
     with lock:
         n = _node(i)
         n['panel'], n['panel_at'] = base64.b64encode(m.payload.to_bytes()).decode(), time.time()
 
 
+def _value(k, b):
+    """decode by the key table; untabled keys: one byte = a flag"""
+    if k in api.KEYS and api.KEYS[k]['type'] in api.STRUCT:
+        try:
+            return api.unpack(k, b)
+        except Exception:
+            return None
+    return b[0] if len(b) == 1 else None
+
+
 def _on_vehicle(m):
-    k = str(m.key_expr)[len('vehicle/'):]
+    k = str(m.key_expr)
+    if k.startswith('ecu/') and k.endswith('/diag/proximity_raw'):
+        k = 'ecu/{ecu}/diag/proximity_raw'
+    k = api.LEGACY.get(k, k)       # old key -> v1
     b = m.payload.to_bytes()
+    v = _value(k, b)
     with lock:
-        if k == 'private/zone/stick/x' and len(b) == 2:
-            sensors['stick_x'], sensors['at'] = struct.unpack('<H', b)[0], time.time()
-        elif k == 'private/zone/stick/y' and len(b) == 2:
-            sensors['stick_y'] = struct.unpack('<H', b)[0]
-        elif k == 'private/zone/proximity/raw' and len(b) == 2:
-            sensors['prox_raw'], sensors['at'] = struct.unpack('<H', b)[0], time.time()
-        elif k == 'private/external/proximity_rear' and len(b) == 4:
-            sensors['prox_m'] = round(struct.unpack('<f', b)[0], 2)
-        elif k.endswith('/target'):
+        if k == STICK_X:
+            sensors['stick_x'], sensors['at'] = v, time.time()
+        elif k == STICK_Y:
+            sensors['stick_y'] = v
+        elif k == 'ecu/{ecu}/diag/proximity_raw':
+            sensors['prox_raw'], sensors['at'] = v, time.time()
+        elif k == PROX_M and v is not None:
+            sensors['prox_m'] = round(v, 2)
+        elif k.endswith('/target') or not k.startswith('vehicle/'):
             return
-        elif k in VSS_FMT and len(b) >= struct.calcsize(VSS_FMT[k]):
-            car[k] = struct.unpack(VSS_FMT[k], b[:struct.calcsize(VSS_FMT[k])])[0]
-        elif len(b) == 1:
-            car[k] = b[0]
+        elif v is not None:
+            car[k[len('vehicle/'):]] = round(v, 2) if isinstance(v, float) else v
         car['_at'] = time.time()
 
 
@@ -93,9 +115,12 @@ def start():
                 c.insert_json5('mode', '"client"')
                 c.insert_json5('connect/endpoints', json.dumps([ROUTER]))
                 s = zenoh.open(c)
-                s.declare_subscriber('t1s/*/hello', _on_hello)
-                s.declare_subscriber('t1s/*/panel', _on_panel)
-                s.declare_subscriber('vehicle/**', _on_vehicle)
+                for k in ('ecu/*/status', 't1s/*/hello'):
+                    s.declare_subscriber(k, _on_hello)
+                for k in ('ecu/*/display', 't1s/*/panel'):
+                    s.declare_subscriber(k, _on_panel)
+                for k in ('vehicle/**', 'ecu/*/diag/**'):
+                    s.declare_subscriber(k, _on_vehicle)
                 while True:
                     time.sleep(3600)
             except Exception as e:                       # zenohd not up yet: try again

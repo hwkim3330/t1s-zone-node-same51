@@ -3,11 +3,12 @@
  * little-endian scalar each, published by the vehicle-API sidecar (zonelink.py) from the sim or from
  * Autoware through the HMI gateway) drive the lamp outputs of dts/zone-lamps-slot1.overlay.
  *
- *   body/lights/directionindicator/left|right/issignaling  u8  -> left / right indicator
- *   body/lights/hazard/issignaling                          u8  -> both indicators
- *   body/lights/brake/isactive                              u8  -> brake
- *   body/lights/backup/ison                                 u8  -> reverse
- *   speed                                                   f32 -> liveness (>= 5 Hz from the sidecar)
+ *   vehicle/body/lights/directionindicator/left|right/issignaling  u8  -> left / right indicator
+ *   vehicle/body/lights/hazard/issignaling                          u8  -> both indicators
+ *   vehicle/body/lights/brake/isactive                              u8  -> brake
+ *   vehicle/body/lights/backup/ison                                 u8  -> reverse
+ *   vehicle/speed                                                   f32 -> liveness (>= 5 Hz from the sidecar)
+ * (the full table, types and owners: docs/VEHICLE_API_KEYS.md, generated into vehicle_api.h)
  *
  * Indicators blink at 1.5 Hz (UN R48: 90 +- 30 per minute), lit first, phase taken from the LAN8651
  * PTP clock: nodes whose clocks are locked (`ptp lock`, later gPTP) blink exactly together.
@@ -23,6 +24,7 @@
 #include <zephyr/net/net_if.h>
 #include <zephyr/shell/shell.h>
 #include "zone.h"
+#include "vehicle_api.h"
 
 #define BLINK_PERIOD_NS 666666667LL
 #define STALE_MS 3000
@@ -61,43 +63,47 @@ void zone_lamps_on_vss(const char *k, const uint8_t *b, size_t n)
 		return;
 	}
 	n_keys++;
-	if (!strcmp(k, "speed")) {
+	/* full keys from the generated table (api/vehicle_api.yaml): no hand-written key strings */
+	if (!strcmp(k, VAPI_SPEED)) {
 		last_live = k_uptime_get();
-	} else if (!strcmp(k, "body/lights/directionindicator/left/issignaling")) {
+		if (n >= 4) {
+			float f;
+
+			memcpy(&f, b, 4);
+			v_speed = f;
+		}
+	} else if (!strcmp(k, VAPI_LIGHT_TURN_LEFT_ISSIGNALING)) {
 		sig_left = b[0];
-	} else if (!strcmp(k, "body/lights/directionindicator/right/issignaling")) {
+	} else if (!strcmp(k, VAPI_LIGHT_TURN_RIGHT_ISSIGNALING)) {
 		sig_right = b[0];
-	} else if (!strcmp(k, "body/lights/hazard/issignaling")) {
+	} else if (!strcmp(k, VAPI_LIGHT_HAZARD_ISSIGNALING)) {
 		sig_hazard = b[0];
-	} else if (!strcmp(k, "body/lights/brake/isactive")) {
+	} else if (!strcmp(k, VAPI_LIGHT_BRAKE_ISACTIVE)) {
 		sig_brake = b[0];
-	} else if (!strcmp(k, "body/lights/backup/ison")) {
+	} else if (!strcmp(k, VAPI_LIGHT_BACKUP_ISON)) {
 		sig_rev = b[0];
-	} else if (!strcmp(k, "powertrain/transmission/selectedgear")) {
+	} else if (!strcmp(k, VAPI_SELECTEDGEAR)) {
 		gear = b[0];
-	} else if (!strcmp(k, "chassis/steeringwheel/angle") && n >= 2) {
+	} else if (!strcmp(k, VAPI_STEERINGWHEEL_ANGLE) && n >= 2) {
 		v_wheel = (int16_t)(b[0] | b[1] << 8);
-	} else if (!strcmp(k, "chassis/accelerator/pedalposition")) {
+	} else if (!strcmp(k, VAPI_ACCELERATOR_PEDALPOSITION)) {
 		v_accel = b[0];
-	} else if (!strcmp(k, "chassis/brake/pedalposition")) {
+	} else if (!strcmp(k, VAPI_BRAKE_PEDALPOSITION)) {
 		v_brake_pedal = b[0];
-	} else if (!strcmp(k, "private/drivingmode")) {
+	} else if (!strcmp(k, VAPI_P_DRIVINGMODE)) {
 		v_mode = b[0];
-	} else if (!strcmp(k, "private/zone/panel/view")) {
+	} else if (!strcmp(k, VAPI_ECU_ALL_CONFIG_DISPLAY_VIEW) || !strcmp(k, VAPI_ECU_ALL_CONFIG_DISPLAY_VIEW_OLD)) {
 		v_view = b[0];
-	} else if (!strcmp(k, "private/zone/lights/beam/high") || !strcmp(k, "body/lights/beam/high/ison")) {
+	} else if (!strcmp(k, VAPI_LIGHT_BEAM_HIGH_ISON_TARGET) || !strcmp(k, VAPI_LIGHT_BEAM_HIGH_ISON_OLD)) {
+		/* the request (the stick); the state key .../ison is ours (zone-left publishes it), so the sidecar's
+		 * value for it is not taken (rule 1 of docs/VEHICLE_API.md: one owner per key) */
 		v_high = b[0];
-	} else if (!strcmp(k, "private/external/proximity_rear") && n >= 4) {
+	} else if ((!strcmp(k, VAPI_ADAS_OBST_REAR_CENTER_DISTANCE) ||
+		    !strcmp(k, VAPI_ADAS_OBST_REAR_CENTER_DISTANCE_OLD)) && n >= 4) {
 		float f;
 
 		memcpy(&f, b, 4);
 		v_prox = f;
-	}
-	if (!strcmp(k, "speed") && n >= 4) {
-		float f;
-
-		memcpy(&f, b, 4);
-		v_speed = f;
 	}
 }
 

@@ -48,5 +48,7 @@ keys:
   - {key: "ecu/{ecu}/diag/proximity_raw", type: u16, owner: "{ecu}", qos: background, max_age: 500, legacy: [vehicle/private/zone/proximity/raw]}
   - {key: "ecu/{ecu}/cmd", type: json, owner: any, qos: interactive, max_age: 0, legacy: ["t1s/sam{id}/cmd"]}
   - {key: "ecu/{ecu}/cmd/ack", type: json, owner: "{ecu}", qos: interactive, max_age: 0, legacy: ["t1s/sam{id}/ack"]}
+  - {key: "vehicle/cmd/{name}", type: json, owner: vehicle, qos: interactive, max_age: 0}   # Zenoh query, JSON args -> {"result","reason",...}; served by the sidecar (korea-autoware-sim sdv/zonelink.py) from the HMI gateway's command API
+  - {key: ecu/ads/status, type: json, owner: ads, qos: interactive, max_age: 3000}   # the ADS heartbeat (1 Hz, {"ads": bool, "age": s}); silent or false = the ADS is gone (the MRM cue for any ECU)
   - {key: ecu/all/cmd, type: json, owner: any, qos: interactive, max_age: 0, legacy: [t1s/all/cmd]}
   - {key: ecu/all/config/display_view, type: u8, owner: zone-right, qos: data, max_age: 0, legacy: [vehicle/private/zone/panel/view]}

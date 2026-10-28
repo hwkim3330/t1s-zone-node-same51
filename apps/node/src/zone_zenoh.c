@@ -218,8 +218,10 @@ static void zenoh_thread(void *a, void *b, void *c)
 			key_fmt(sk[i], sizeof(sk[i]), sub_k[i], id);
 			z_view_keyexpr_from_str_unchecked(&k, sk[i]);
 			z_closure(&c, i < 4 ? on_cmd : on_vehicle, NULL, NULL);
-			z_declare_subscriber(z_session_loan(&s), &sub[i], z_view_keyexpr_loan(&k), z_closure_sample_move(&c),
-					     NULL);
+			if (z_declare_subscriber(z_session_loan(&s), &sub[i], z_view_keyexpr_loan(&k),
+						 z_closure_sample_move(&c), NULL) < 0) {
+				LOG_ERR("zenoh: cannot subscribe %s (heap?)", sk[i]);
+			}
 		}
 		/* the shared panel view lives under ecu/all/config: on_vehicle takes it as well */
 		z_owned_subscriber_t sub_view;
@@ -241,6 +243,9 @@ static void zenoh_thread(void *a, void *b, void *c)
 				z_view_keyexpr_from_str_unchecked(&k, pk[i][v]);
 				pub_has[i][v] = z_declare_publisher(z_session_loan(&s), &pub_sensor[i][v],
 								    z_view_keyexpr_loan(&k), NULL) == 0;
+				if (!pub_has[i][v]) { /* silent before: out of heap, the later keys simply never went out */
+					LOG_ERR("zenoh: cannot declare %s (heap?)", pk[i][v]);
+				}
 			}
 		}
 		sensors_ok = true;

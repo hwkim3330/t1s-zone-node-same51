@@ -27,7 +27,7 @@ sysbuild_option(T1S_SLOT)
 sysbuild_option(LAMP_SLOT)
 
 # Which mikroBUS slot holds the Two-Wire ETH click (found by apps/probe).
-set(T1S_SLOT 3 CACHE STRING "mikroBUS slot (1-3) of the MIKROE-5543 click")
+set(T1S_SLOT 1 CACHE STRING "mikroBUS slot (1-3) of the MIKROE-5543 click")
 list(APPEND EXTRA_DTC_OVERLAY_FILE
      ${CMAKE_CURRENT_LIST_DIR}/../../dts/two-wire-eth-click-slot${T1S_SLOT}.overlay)
 
@@ -36,7 +36,7 @@ set(ZENOH_PICO_DIR $ENV{HOME}/esp32-t1s-bridge/vendor/zenoh-pico CACHE PATH "zen
 list(APPEND ZEPHYR_EXTRA_MODULES ${ZENOH_PICO_DIR})
 
 # Zone lamp outputs (left/right/brake/reverse) on a free mikroBUS slot; 0 = none
-set(LAMP_SLOT 1 CACHE STRING "mikroBUS slot for the zone lamp outputs (0 = none)")
+set(LAMP_SLOT 3 CACHE STRING "mikroBUS slot for the zone lamp outputs (0 = none)")
 if(LAMP_SLOT STREQUAL T1S_SLOT)
   message(FATAL_ERROR "LAMP_SLOT ${LAMP_SLOT} is the T1S click's slot: pick another (README: Slot plan)")
 endif()

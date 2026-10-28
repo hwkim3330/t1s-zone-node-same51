@@ -25,6 +25,7 @@
 #include <zephyr/shell/shell.h>
 #include <zephyr/logging/log.h>
 #include <cmsis_core.h>
+#include <zephyr/linker/section_tags.h>
 #include "zone.h"
 #include "vehicle_api.h"
 #include "zone_render.h"
@@ -90,32 +91,73 @@ static const struct gpio_dt_spec panel_pin = GPIO_DT_SPEC_GET(USER, panel_gpios)
  * off for the whole frame (100 LEDs x 24 bits x 1.25 us = 3 ms); the LAN8651 IRQ waits that long at most.
  * SAM D5x PORT group: OUTCLR at +0x14, OUTSET at +0x18.
  */
-static void ws2812_send(const uint8_t *grb, size_t n)
+/*
+ * The bit-bang runs from RAM: Zephyr keeps the SAM D5x/E5x cache (CMCC) off, so from flash every polling loop
+ * fetched through the wait states and, with DMA on the bus (a T1S burst, a firmware upload), a 0-bit's high time
+ * could stretch past the LEDs' threshold (~600 ns) and read as a 1 -- a frame of near-white at full current, which
+ * is what the "all red, board dead, SWD dead" incidents (v0.11.1, v0.13.0) look like: the nEDBG cuts the target
+ * supply on overcurrent. T0H is 300 ns (was 400) for margin; every high time is measured, and a frame with a late
+ * 0-bit is sent again at once (the LEDs take the newest frame).
+ */
+#define T0H 36  /* 300 ns at 120 MHz */
+#define T1H 96  /* 800 ns */
+#define TBIT 150
+#define LATE 24 /* a 0-bit longer than T0H + LATE (500 ns) is not safe */
+static uint32_t ws_late_max, ws_resent, ws_frames;
+
+static __ramfunc uint32_t ws2812_bits(const uint8_t *grb, size_t n)
 {
 	volatile uint32_t *const clr = (volatile uint32_t *)(PANEL_PORT + 0x14);
 	volatile uint32_t *const set = (volatile uint32_t *)(PANEL_PORT + 0x18);
 	const uint32_t m = BIT(PANEL_PIN);
-
-	CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-	DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+	uint32_t late0 = 0; /* the longest 0-bit overshoot, cycles */
 	unsigned int key = irq_lock();
 	uint32_t t = DWT->CYCCNT;
 
 	for (size_t i = 0; i < n; i++) {
 		for (uint8_t b = 0x80; b; b >>= 1) {
-			const uint32_t hi = (grb[i] & b) ? 96 : 48;
+			const uint32_t hi = (grb[i] & b) ? T1H : T0H;
 
-			while (DWT->CYCCNT - t < 150) {
+			while (DWT->CYCCNT - t < TBIT) {
 			}
 			t = DWT->CYCCNT;
 			*set = m;
 			while (DWT->CYCCNT - t < hi) {
 			}
 			*clr = m;
+			uint32_t over = DWT->CYCCNT - t - hi;
+
+			if (hi == T0H && over > late0) {
+				late0 = over;
+			}
 		}
 	}
 	irq_unlock(key);
-	k_busy_wait(300); /* reset / latch: > 280 us low for the newer parts */
+	return late0;
+}
+
+static void ws2812_send(const uint8_t *grb, size_t n)
+{
+	CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+	DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+	ws_frames++;
+	for (int tries = 0; tries < 3; tries++) {
+		uint32_t late = ws2812_bits(grb, n);
+
+		if (late > ws_late_max) {
+			ws_late_max = late;
+		}
+		k_busy_wait(300); /* reset / latch: > 280 us low for the newer parts */
+		if (late <= LATE) {
+			return;
+		}
+		ws_resent++;
+	}
+	/* still late three times: dark, so a misread frame cannot stay lit */
+	static uint8_t dark[300];
+
+	ws2812_bits(dark, MIN(n, sizeof(dark)));
+	k_busy_wait(300);
 }
 
 /* the cycle counter must be running or the loops above never end with interrupts off */
@@ -511,6 +553,10 @@ static int cmd_panel(const struct shell *sh, size_t argc, char **argv)
 		    have_stick ? "thumbstick" : have_prox ? "proximity" : "none", stick_x, stick_y, prox_raw);
 	shell_print(sh, "panel: current budget %u (sum of channel values per frame), frames scaled down %u", PANEL_BUDGET,
 		    budget_hits);
+#if HAS_PANEL
+	shell_print(sh, "panel: LED timing (from RAM, T0H %u cycles): longest late 0-bit %u cycles (limit %u), frames %u, "
+		    "resent %u", T0H, ws_late_max, LATE, ws_frames, ws_resent);
+#endif
 	return 0;
 }
 SHELL_CMD_REGISTER(panel, NULL, "panel [mode lamps|cluster|map <bits>|bright <0.02..0.3>|half left|right|auto|pattern on|off|test]", cmd_panel);

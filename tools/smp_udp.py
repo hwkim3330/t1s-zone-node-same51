@@ -6,6 +6,7 @@
     tools/smp_udp.py 192.168.100.73 reset
 
 `update` = upload into slot 1, mark it for a test boot, reset. MCUboot swaps it in; the app confirms
+`upload` = only the first step (slot 1, no test boot, no reset): also a load test of the node.
 itself once its network driver is up, otherwise the next reset swaps the old image back.
 Several hosts at once: `update` takes a comma-separated list. Needs cbor2 (already used by imgtool)."""
 import hashlib
@@ -48,7 +49,7 @@ def show(sock, host):
         print(f"{host} slot {im['slot']}: v{im.get('version')} {im['hash'].hex()[:16]} {flags}")
 
 
-def update(sock, host, path):
+def update(sock, host, path, boot=True):
     img = open(path, 'rb').read()
     sha = hashlib.sha256(img).digest()
     off, t0 = 0, time.time()
@@ -56,7 +57,13 @@ def update(sock, host, path):
         body = {'image': 0, 'off': off, 'data': img[off:off + CHUNK]}
         if off == 0:
             body.update(len=len(img), sha=sha)
-        r = smp(sock, host, 2, 1, 1, body)
+        for tries in range(20):  # a lost datagram is retried (same offset); the node answers with where it is
+            try:
+                r = smp(sock, host, 2, 1, 1, body)
+                break
+            except TimeoutError:
+                if tries == 19:
+                    raise
         if r.get('rc', 0):
             raise RuntimeError(f'{host}: upload rc {r}')
         if off * 10 // len(img) != r['off'] * 10 // len(img):
@@ -64,6 +71,8 @@ def update(sock, host, path):
         off = r['off']
     dt = time.time() - t0
     print(f'{host}: {len(img)} B in {dt:.1f} s ({len(img) * 8 / dt / 1e3:.0f} kbit/s)')
+    if not boot:             # `upload`: into slot 1 only (no test boot, no reset) -- also a load test
+        return
     new = [im for im in state(sock, host) if im['slot'] == 1][0]
     r = smp(sock, host, 2, 1, 0, {'hash': new['hash'], 'confirm': False})
     print(f'{host}: test boot of {new["hash"].hex()[:16]} marked ({r.get("rc", 0)}), resetting')
@@ -82,6 +91,8 @@ def main():
             smp(sock, h, 2, 0, 5, {})
         elif what == 'update':
             update(sock, h, sys.argv[3])
+        elif what == 'upload':
+            update(sock, h, sys.argv[3], boot=False)
     if what == 'update':
         time.sleep(15)       # MCUboot swap (~2 x 176 KB of 8 KiB erases) + boot + T1S up
         for h in hosts:

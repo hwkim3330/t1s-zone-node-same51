@@ -192,7 +192,7 @@ static void zenoh_thread(void *a, void *b, void *c)
 		static const char *const hello_k[2] = {VAPI_ECU_STATUS, VAPI_ECU_STATUS_OLD};
 		static const char *const ack_k[2] = {VAPI_ECU_CMD_ACK, VAPI_ECU_CMD_ACK_OLD};
 		/*
-		 * commands (on_cmd), then the vehicle / config keys this zone uses (on_vehicle) -- not vehicle/**: that
+		 * commands (on_cmd), then the vehicle / config keys this zone uses (on_vehicle) -- not the whole vehicle/ tree: that
 		 * brought every other zone's inputs (sticks, sensors) onto this node's receive pool as well
 		 */
 #define N_SUB 10

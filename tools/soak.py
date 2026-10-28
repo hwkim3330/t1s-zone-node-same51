@@ -23,6 +23,15 @@ z = zenoh.open(c)
 hello = []
 z.declare_subscriber('t1s/*/hello', lambda m: hello.append((time.time(), json.loads(m.payload.to_string()))))
 offs, problems, rounds = [], [], 0
+
+
+class Problems(list):
+    def append(self, p):
+        print('PROBLEM', *p, flush=True)        # at once, not only in the summary
+        super().append(p)
+
+
+problems = Problems()
 t_end = time.time() + MIN * 60
 first_up = None
 while time.time() < t_end:

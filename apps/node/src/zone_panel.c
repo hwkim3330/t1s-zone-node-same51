@@ -27,6 +27,7 @@
 #include <cmsis_core.h>
 #include "zone.h"
 #include "zone_render.h"
+#include "zone_lampgfx.h"
 #include "t1s_diag.h"
 
 LOG_MODULE_REGISTER(zone_panel, LOG_LEVEL_INF);
@@ -51,6 +52,7 @@ static volatile bool pattern;       /* `panel pattern on`: the orientation pictu
 static bool have_stick, have_prox;
 static volatile uint16_t stick_x, stick_y, prox_raw;
 static uint32_t frames;
+static uint8_t lamp_mode = 1;      /* 1 = the zone's lamps (zone_lampgfx.h), 0 = the cluster picture */
 static uint8_t beam_on;            /* the stick node's high beam (right flick toggles it) */
 
 static int panel_set(const char *key, size_t len, settings_read_cb read, void *arg)
@@ -59,6 +61,8 @@ static int panel_set(const char *key, size_t len, settings_read_cb read, void *a
 		read(arg, &map_bits, 1);
 	} else if (!strcmp(key, "bright") && len == sizeof(bright)) {
 		read(arg, &bright, sizeof(bright));
+	} else if (!strcmp(key, "mode") && len == 1) {
+		read(arg, &lamp_mode, 1);
 	} else if (!strcmp(key, "half") && len == sizeof(half)) {
 		read(arg, &half, sizeof(half));
 	}
@@ -259,35 +263,46 @@ static void panel_thread(void *a, void *b, void *c)
 		/* the picture */
 		struct zone_vehicle v;
 		bool live = zone_vehicle(&v);
+		int h = half >= 0 ? half : (zone_plca_id() & 1) ? 0 : 1;
+		bool l = live && v.left && v.lit, r = live && v.right && v.lit;
 
-		if (live) {
+		/* the sweep restarts each time a lamp lights (one column per 25 ms) */
+		if (l && !was_l) {
+			lit_l = now;
+		}
+		if (r && !was_r) {
+			lit_r = now;
+		}
+		was_l = l;
+		was_r = r;
+		double prox = have_prox ? zr_prox_m(prox_raw) : (v.prox_m >= 0 ? v.prox_m : -1);
+
+		if (lamp_mode) {
+			/* this zone's lamps: the left zone (h 0) takes the left indicator, the right zone the right one */
+			zl_state z = {.live = live, .turn_lit = h ? r : l,
+				      .turn_since = (now - (h ? lit_r : lit_l)) / 1000.0,
+				      .brake = live && v.brake, .reverse = live && v.reverse,
+				      .high_beam = live && v.high_beam, .prox_m = prox};
+
+			memset(fb, 0, sizeof(zr_fb));
+			zl_lamps(fb, h, &z);
+		} else if (live) {
 			zr_state s = {0};
 
-			/* the sweep restarts each time a lamp lights (zone_render: one column per 25 ms) */
-			bool l = v.left && v.lit, r = v.right && v.lit;
-
-			if (l && !was_l) {
-				lit_l = now;
-			}
-			if (r && !was_r) {
-				lit_r = now;
-			}
-			was_l = l;
-			was_r = r;
 			s.lamps = (l ? ZR_LEFT : 0) | (r ? ZR_RIGHT : 0) | (v.brake ? ZR_BRAKE : 0) |
 				  (v.reverse ? ZR_REVERSE : 0) | (v.hazard ? ZR_HAZARD : 0) | (v.high_beam ? ZR_HIGH_BEAM : 0);
 			s.gear = v.gear;
 			s.speed = v.speed_kmh;
 			s.mode = v.mode;
-			s.prox_m = have_prox ? zr_prox_m(prox_raw) : (v.prox_m >= 0 ? v.prox_m : -1);
+			s.prox_m = prox;
 			s.wheel_deg = v.wheel_deg;
 			s.accel = v.accel;
 			s.brake = v.brake_pedal;
 			zr_car(fb, &s, (now - lit_l) / 1000.0, (now - lit_r) / 1000.0);
 		} else {
-			zr_nolink(fb, tick, have_prox ? zr_prox_m(prox_raw) : -1);
+			zr_nolink(fb, tick, prox);
 		}
-		int h = half >= 0 ? half : (zone_plca_id() & 1) ? 0 : 1;
+
 
 		if (pattern) {
 			/*
@@ -385,6 +400,9 @@ static int cmd_panel(const struct shell *sh, size_t argc, char **argv)
 	} else if (argc > 2 && !strcmp(argv[1], "half")) {
 		half = !strcmp(argv[2], "left") ? 0 : !strcmp(argv[2], "right") ? 1 : -1;
 		settings_save_one("panel/half", &half, sizeof(half));
+	} else if (argc > 2 && !strcmp(argv[1], "mode")) {
+		lamp_mode = strcmp(argv[2], "cluster") != 0;
+		settings_save_one("panel/mode", &lamp_mode, 1);
 	} else if (argc > 2 && !strcmp(argv[1], "pattern")) {
 		pattern = !strcmp(argv[2], "on");
 	} else if (argc > 1 && !strcmp(argv[1], "test")) {
@@ -395,9 +413,9 @@ static int cmd_panel(const struct shell *sh, size_t argc, char **argv)
 		}
 		test_led = -1;
 	}
-	shell_print(sh, "panel: %s%s, half %s, map %u (serpentine %u mirror-x %u mirror-y %u columns %u), bright %.2f, "
+	shell_print(sh, "panel: %s mode, %s%s, half %s, map %u (serpentine %u mirror-x %u mirror-y %u columns %u), bright %.2f, "
 		    "%u frames | slot 3: %s stick %u/%u prox %u",
-		    HAS_PANEL ? "10x10 on slot 2" : "none built in", pattern ? " (orientation pattern)" : "",
+		    lamp_mode ? "zone lamps" : "cluster", HAS_PANEL ? "10x10 on slot 2" : "none built in", pattern ? " (orientation pattern)" : "",
 		    half == 0 ? "left" : half == 1 ? "right" : "auto (PLCA id odd = left)", map_bits, map_bits & 1,
 		    (map_bits >> 1) & 1, (map_bits >> 2) & 1, (map_bits >> 3) & 1, (double)bright, frames,
 		    have_stick ? "thumbstick" : have_prox ? "proximity" : "none", stick_x, stick_y, prox_raw);
@@ -405,4 +423,4 @@ static int cmd_panel(const struct shell *sh, size_t argc, char **argv)
 		    budget_hits);
 	return 0;
 }
-SHELL_CMD_REGISTER(panel, NULL, "panel [map <bits>|bright <0.02..0.3>|half left|right|auto|pattern on|off|test]", cmd_panel);
+SHELL_CMD_REGISTER(panel, NULL, "panel [mode lamps|cluster|map <bits>|bright <0.02..0.3>|half left|right|auto|pattern on|off|test]", cmd_panel);

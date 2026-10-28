@@ -40,3 +40,4 @@ extern uint8_t zone_reset_cause;
 
 /* zone_lamps.c: the panel view every zone shows (0 lamps, 1 cluster), switched from the stick, -1 = none heard */
 int zone_panel_view(void);
+int zone_high_beam(void); /* the high beam as requested / as the headlamp zone reports it */

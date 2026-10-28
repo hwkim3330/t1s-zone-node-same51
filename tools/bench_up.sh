@@ -15,7 +15,8 @@ ZENOHD=/opt/zenoh/1.10.1/zenohd
 ROUTER=tcp/192.168.100.51:7448
 GATEWAY=${GATEWAY:-http://10.42.0.90:8780}
 # the vehicle-API sidecar (zonelink.py, from the simulator project); SIDECAR=<path> to point at it
-SIDECAR=${SIDECAR:-$(ls "$HOME"/*/sdv/zonelink.py 2>/dev/null | head -1)}
+# (the main checkout: other worktrees of the project carry older copies)
+SIDECAR=${SIDECAR:-$HOME/korea-autoware-sim/sdv/zonelink.py}
 
 listening() { ss -ltn | grep -q ":$1 "; }
 pidfile_alive() { [ -f "$L/$1.pid" ] && kill -0 "$(cat "$L/$1.pid")" 2>/dev/null; }

@@ -186,15 +186,21 @@ static void zenoh_thread(void *a, void *b, void *c)
 
 		uint8_t id = zone_plca_id();
 		z_owned_publisher_t hello[2];
-		z_owned_subscriber_t sub[5];
+		z_owned_subscriber_t sub[10];
 		z_view_keyexpr_t k;
 		/* [v1, old] */
 		static const char *const hello_k[2] = {VAPI_ECU_STATUS, VAPI_ECU_STATUS_OLD};
 		static const char *const ack_k[2] = {VAPI_ECU_CMD_ACK, VAPI_ECU_CMD_ACK_OLD};
-		/* commands (on_cmd) and the vehicle / config keys (on_vehicle) */
-		static const char *const sub_k[5] = {VAPI_ECU_CMD, VAPI_ECU_CMD_OLD, VAPI_ECU_ALL_CMD, VAPI_ECU_ALL_CMD_OLD,
-						     "vehicle/**"};
-		static char sk[5][64];
+		/*
+		 * commands (on_cmd), then the vehicle / config keys this zone uses (on_vehicle) -- not vehicle/**: that
+		 * brought every other zone's inputs (sticks, sensors) onto this node's receive pool as well
+		 */
+#define N_SUB 10
+		static const char *const sub_k[N_SUB] = {
+			VAPI_ECU_CMD, VAPI_ECU_CMD_OLD, VAPI_ECU_ALL_CMD, VAPI_ECU_ALL_CMD_OLD,
+			VAPI_SPEED, "vehicle/body/lights/**", "vehicle/chassis/**", VAPI_SELECTEDGEAR, VAPI_P_DRIVINGMODE,
+			"vehicle/adas/**"};
+		static char sk[N_SUB][64];
 		bool ok = true;
 
 		for (int v = 0; v < 2; v++) {
@@ -206,7 +212,7 @@ static void zenoh_thread(void *a, void *b, void *c)
 			ok &= z_declare_publisher(z_session_loan(&s), &pub_ack[v], z_view_keyexpr_loan(&k), NULL) == 0;
 		}
 		ack_ok = ok;
-		for (int i = 0; i < 5; i++) {
+		for (int i = 0; i < N_SUB; i++) {
 			z_owned_closure_sample_t c;
 
 			key_fmt(sk[i], sizeof(sk[i]), sub_k[i], id);
@@ -304,7 +310,7 @@ static void zenoh_thread(void *a, void *b, void *c)
 		sensors_ok = false;
 		zp_stop_read_task(z_session_loan_mut(&s));
 		zp_stop_lease_task(z_session_loan_mut(&s));
-		for (int i = 0; i < 5; i++) {
+		for (int i = 0; i < N_SUB; i++) {
 			z_undeclare_subscriber(z_subscriber_move(&sub[i]));
 		}
 		z_undeclare_subscriber(z_subscriber_move(&sub_view));

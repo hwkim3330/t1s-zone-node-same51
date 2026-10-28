@@ -94,9 +94,10 @@ void zone_lamps_on_vss(const char *k, const uint8_t *b, size_t n)
 		v_mode = b[0];
 	} else if (!strcmp(k, VAPI_ECU_ALL_CONFIG_DISPLAY_VIEW) || !strcmp(k, VAPI_ECU_ALL_CONFIG_DISPLAY_VIEW_OLD)) {
 		v_view = b[0];
-	} else if (!strcmp(k, VAPI_LIGHT_BEAM_HIGH_ISON_TARGET) || !strcmp(k, VAPI_LIGHT_BEAM_HIGH_ISON_OLD)) {
-		/* the request (the stick); the state key .../ison is ours (zone-left publishes it), so the sidecar's
-		 * value for it is not taken (rule 1 of docs/VEHICLE_API.md: one owner per key) */
+	} else if (!strcmp(k, VAPI_LIGHT_BEAM_HIGH_ISON_TARGET) || !strcmp(k, VAPI_LIGHT_BEAM_HIGH_ISON_OLD) ||
+		   !strcmp(k, VAPI_LIGHT_BEAM_HIGH_ISON)) {
+		/* a request (the stick, the HMI) or the owner's state (zone-left publishes .../ison; nobody else may:
+		 * rule 1 of docs/VEHICLE_API.md, one owner per key; the owner does not hear its own puts) */
 		v_high = b[0];
 	} else if ((!strcmp(k, VAPI_ADAS_OBST_REAR_CENTER_DISTANCE) ||
 		    !strcmp(k, VAPI_ADAS_OBST_REAR_CENTER_DISTANCE_OLD)) && n >= 4) {
@@ -108,6 +109,8 @@ void zone_lamps_on_vss(const char *k, const uint8_t *b, size_t n)
 }
 
 int zone_panel_view(void) { return v_view; }
+
+int zone_high_beam(void) { return v_high; }
 
 /* seconds on the PTP clock (shared by the locked zones), or uptime without one */
 double zone_clock_s(void)

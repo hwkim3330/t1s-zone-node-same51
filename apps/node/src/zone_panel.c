@@ -272,7 +272,10 @@ static void panel_thread(void *a, void *b, void *c)
 
 				if (ready && x >= 3700) {
 					last_flick = now;
-					beam_on = !beam_on;
+					/* toggle what the car shows (the owner's state, or another requester's), ask once:
+					 * a request repeated at 20 Hz would override every other requester (HMI) at once */
+					beam_on = !zone_high_beam();
+					zone_publish(ZONE_PUB_BEAM, &beam_on, 1);
 					/* to this node's own lamps too: zenohd does not echo a session's own puts back */
 					zone_lamps_on_vss(VAPI_LIGHT_BEAM_HIGH_ISON_TARGET, &beam_on, 1);
 					LOG_INF("stick flick right: high beam %s", beam_on ? "on" : "off");
@@ -281,22 +284,37 @@ static void panel_thread(void *a, void *b, void *c)
 					view = !view;
 					LOG_INF("stick flick left: panels show %s", view ? "the cluster" : "the zone lamps");
 				}
-				stick_x = x;
-				stick_y = y;
-				zone_publish(ZONE_PUB_STICK_X, (const void *)&stick_x, 2);
-				zone_publish(ZONE_PUB_STICK_Y, (const void *)&stick_y, 2);
-				/* the high beam belongs to the headlamp zone (zone-left): the stick only asks, on .../target
-				 * (20 Hz like the stick: a late joiner sees it at once) */
-				zone_publish(ZONE_PUB_BEAM, &beam_on, 1);
-				zone_publish(ZONE_PUB_VIEW, &view, 1);
+				/* on change (beyond the ADC's noise) or 1 Hz: at a flat 20 Hz the two keys (v1 + old) of
+				 * every input filled the other node's receive pool (v0.13.0, 2026-10-28) */
+				static int64_t stick_at;
+
+				if (abs(x - stick_x) > 40 || abs(y - stick_y) > 40 || now - stick_at >= 1000) {
+					stick_at = now;
+					stick_x = x;
+					stick_y = y;
+					zone_publish(ZONE_PUB_STICK_X, (const void *)&stick_x, 2);
+					zone_publish(ZONE_PUB_STICK_Y, (const void *)&stick_y, 2);
+				}
+				/* the view: the stick node is its only source, so it repeats it (1 Hz) for nodes that boot
+				 * later; the high beam is asked for once per flick (above) and owned by zone-left */
+				static int64_t view_at;
+
+				if (now - view_at >= 1000 || last_flick == now) {
+					view_at = now;
+					zone_publish(ZONE_PUB_VIEW, &view, 1);
+				}
 			}
 		}
 #endif
 		if (have_prox) {
 			int r = vcnl4200_read();
 
-			if (r >= 0) {
+			static int64_t prox_at;
+
+			if (r >= 0 && now - prox_at >= 200) { /* 5 Hz */
 				float m = (float)zr_prox_m(r);
+
+				prox_at = now;
 
 				prox_raw = r;
 				zone_publish(ZONE_PUB_PROX_RAW, (const void *)&prox_raw, 2);

@@ -53,7 +53,8 @@ static bool have_stick, have_prox;
 static volatile uint16_t stick_x, stick_y, prox_raw;
 static uint32_t frames;
 static uint8_t lamp_mode = 1;      /* 1 = the zone's lamps (zone_lampgfx.h), 0 = the cluster picture */
-static uint8_t beam_on;            /* the stick node's high beam (right flick toggles it) */
+static uint8_t beam_on;
+static uint8_t view;               /* the stick node's panel view for every zone (left flick toggles it) */            /* the stick node's high beam (right flick toggles it) */
 
 static int panel_set(const char *key, size_t len, settings_read_cb read, void *arg)
 {
@@ -241,12 +242,17 @@ static void panel_thread(void *a, void *b, void *c)
 					armed = false;
 					beam_on = !beam_on;
 					LOG_INF("stick flick right: high beam %s", beam_on ? "on" : "off");
+				} else if (armed && x <= 400) { /* a flick left: every zone between the lamps and the cluster */
+					armed = false;
+					view = !view;
+					LOG_INF("stick flick left: panels show %s", view ? "the cluster" : "the zone lamps");
 				}
 				stick_x = x;
 				stick_y = y;
 				zone_publish(ZONE_PUB_STICK_X, (const void *)&stick_x, 2);
 				zone_publish(ZONE_PUB_STICK_Y, (const void *)&stick_y, 2);
 				zone_publish(ZONE_PUB_BEAM, &beam_on, 1); /* 20 Hz like the stick: a late joiner sees it at once */
+				zone_publish(ZONE_PUB_VIEW, &view, 1);
 			}
 		}
 #endif
@@ -298,7 +304,11 @@ static void panel_thread(void *a, void *b, void *c)
 		double welcome = now - live_at < 800 ? (now - live_at) / 800.0
 			       : now - gone_at < 800 ? -(1.0 - (now - gone_at) / 800.0) : 2;
 
-		if (lamp_mode) {
+		/* the stick's view, when one is heard, wins over this node's saved `panel mode` */
+		int sv = zone_panel_view();
+		bool lamps = sv >= 0 ? sv == 0 : lamp_mode;
+
+		if (lamps) {
 			/* this zone's lamps: the left zone (h 0) takes the left indicator, the right zone the right one */
 			zl_state z = {.live = live, .turn_lit = h ? r : l, .autonomous = live && v.mode == 2,
 				      .clock_s = zone_clock_s(), .welcome = welcome, .ess = now < ess_until,

@@ -37,7 +37,9 @@ static const char *const sensor_keys[ZONE_PUB_COUNT] = {
 	"t1s/sam%u/panel" /* this node's 10x10 picture, 300 B RGB row-major, as drawn (before `panel map`) */,
 	/* the high beam is a zone function here: Autoware / the CARLA interface have no headlights, the zone node that
 	 * owns the stick switches it and every zone shows it */
-	"vehicle/private/zone/lights/beam/high"};
+	"vehicle/private/zone/lights/beam/high",
+	/* the panel view (0 the zone lamps, 1 the cluster picture): the stick's left flick switches every zone */
+	"vehicle/private/zone/panel/view"};
 static z_owned_publisher_t pub_sensor[ZONE_PUB_COUNT];
 static volatile bool sensors_ok;
 static K_MUTEX_DEFINE(pub_lock);

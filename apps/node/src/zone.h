@@ -30,8 +30,11 @@ bool zone_vehicle(struct zone_vehicle *v);
 double zone_clock_s(void); /* the PTP clock in seconds (shared by locked zones), uptime without it */
 
 /* zone_zenoh.c: publish one sensor value (key below "vehicle/", one little-endian scalar) if connected */
-enum { ZONE_PUB_STICK_X, ZONE_PUB_STICK_Y, ZONE_PUB_PROX_RAW, ZONE_PUB_PROX_M, ZONE_PUB_PANEL, ZONE_PUB_BEAM, ZONE_PUB_COUNT };
+enum { ZONE_PUB_STICK_X, ZONE_PUB_STICK_Y, ZONE_PUB_PROX_RAW, ZONE_PUB_PROX_M, ZONE_PUB_PANEL, ZONE_PUB_BEAM, ZONE_PUB_VIEW, ZONE_PUB_COUNT };
 void zone_publish(int which, const void *b, size_t n);
 
 /* main.c: RSTC.RCAUSE at boot (bit 5 watchdog, 6 software, 4 external, 0 power-on) */
 extern uint8_t zone_reset_cause;
+
+/* zone_lamps.c: the panel view every zone shows (0 lamps, 1 cluster), switched from the stick, -1 = none heard */
+int zone_panel_view(void);

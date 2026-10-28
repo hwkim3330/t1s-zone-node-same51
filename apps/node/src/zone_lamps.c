@@ -35,6 +35,7 @@ static volatile uint8_t sig_left, sig_right, sig_hazard, sig_brake, sig_rev, gea
 static volatile float v_speed, v_prox = -1;
 static volatile int16_t v_wheel;
 static volatile uint8_t v_accel, v_brake_pedal, v_mode, v_high;
+static volatile int v_view = -1;
 static volatile int64_t last_live;
 static uint32_t n_keys;
 volatile int zone_lamp_led = -1; /* LED0 override from the lamps: -1 none, 0/1 */
@@ -82,6 +83,8 @@ void zone_lamps_on_vss(const char *k, const uint8_t *b, size_t n)
 		v_brake_pedal = b[0];
 	} else if (!strcmp(k, "private/drivingmode")) {
 		v_mode = b[0];
+	} else if (!strcmp(k, "private/zone/panel/view")) {
+		v_view = b[0];
 	} else if (!strcmp(k, "private/zone/lights/beam/high") || !strcmp(k, "body/lights/beam/high/ison")) {
 		v_high = b[0];
 	} else if (!strcmp(k, "private/external/proximity_rear") && n >= 4) {
@@ -97,6 +100,8 @@ void zone_lamps_on_vss(const char *k, const uint8_t *b, size_t n)
 		v_speed = f;
 	}
 }
+
+int zone_panel_view(void) { return v_view; }
 
 /* seconds on the PTP clock (shared by the locked zones), or uptime without one */
 double zone_clock_s(void)

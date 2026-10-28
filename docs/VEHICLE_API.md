@@ -78,3 +78,15 @@ Rules:
    the HMI gateway's command API (results passed back).
 4. **ESP zone controller**: v1 keys (firmware build from the generated header).
 5. Drop the old keys; the catalogue hash in `ecu/*/status` confirms everyone moved.
+
+## Status (2026-10-28)
+
+| step | state |
+|---|---|
+| 1. key table | **done**: `api/vehicle_api.yaml` (30 keys: type, unit, owner, QoS class, max age, `target`, VSS 6.1 path, legacy keys) → `tools/apigen.py` → `apps/node/src/vehicle_api.h`, `tools/vehicle_api.py`, [`VEHICLE_API_KEYS.md`](VEHICLE_API_KEYS.md). `--check` fails on a stale file. The table's hash goes into every `ecu/<role>/status` (`"api"`). Still separate from the ESP's signal catalogue (`elite-t1s-hat/firmware/catalog/`); merging the two is step 4. |
+| 1. latest values | **done**: `api/zenohd.json5` (memory storages `vehicle/**`, `ecu/**`, REST :8834), started by `tools/bench_up.sh`. Every stored sample carries its HLC timestamp, which the reader compares with `max_age`. |
+| 2. zone nodes | **done in v0.13.0**: publish v1 and old keys, accept both; role = the panel half (`zone-left` / `zone-right`); the stick asks for the high beam on `…/beam/high/ison/target`, zone-left owns and publishes the lamp state keys (high / low beam, DRL, parking, J3134 marker) at 1 Hz; rear distance + `iswarning` (< 1.5 m, what the lamps show). |
+| 2. console / HMI bridge | **done**: decode by the generated table, old keys mapped to v1 (`LEGACY`); node cards show role and API hash (or "old keys"). |
+| 3. sidecar | **started**: no longer publishes or answers the zone-owned lamp keys (korea-autoware-sim `1a6d416`). `vehicle/cmd/*` queries: open. |
+| 4. ESP zone controller | open |
+| 5. drop old keys | open |

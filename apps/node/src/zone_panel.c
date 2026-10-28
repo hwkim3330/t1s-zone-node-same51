@@ -38,14 +38,20 @@ LOG_MODULE_REGISTER(zone_panel, LOG_LEVEL_INF);
 static const struct device *const i2c = DEVICE_DT_GET(DT_NODELABEL(mikrobus_i2c));
 #define PROX_ADDR 0x51
 
-static uint8_t map_bits = 1;        /* serpentine rows: the usual matrix wiring */
-static float bright = 0.12f;
+static uint8_t map_bits = 0;        /* row-major, no zigzag: MIKROE-4115 per its library (index = 10 * y + x) */
+static float bright = 0.03f;       /* start dim; `panel bright` raises it (saved) */
+/* Hard current budget per frame: the sum of every channel value sent (0..76500 for 100 white LEDs at 255).
+ * ~12 mA per channel at 255 on 5050 WS2812s -> 1500 = ~70 mA for the whole panel. A brighter frame is scaled
+ * down whatever asked for it (2026-10-28: a panel image froze both boards, supply suspected). */
+#define PANEL_BUDGET 1500
+static uint32_t budget_hits;
 static int half = -1;               /* 0 left, 1 right, -1 = from the PLCA id */
 static volatile int test_led = -1;  /* `panel test`: the LED index being shown */
 static volatile bool pattern;       /* `panel pattern on`: the orientation picture instead of the car */
 static bool have_stick, have_prox;
 static volatile uint16_t stick_x, stick_y, prox_raw;
 static uint32_t frames;
+static uint8_t beam_on;            /* the stick node's high beam (right flick toggles it) */
 
 static int panel_set(const char *key, size_t len, settings_read_cb read, void *arg)
 {
@@ -98,6 +104,17 @@ static void ws2812_send(const uint8_t *grb, size_t n)
 	}
 	irq_unlock(key);
 	k_busy_wait(300); /* reset / latch: > 280 us low for the newer parts */
+}
+
+/* the cycle counter must be running or the loops above never end with interrupts off */
+static bool cyccnt_runs(void)
+{
+	CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+	DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+	uint32_t a = DWT->CYCCNT;
+
+	k_busy_wait(2);
+	return DWT->CYCCNT != a;
 }
 #endif
 
@@ -189,6 +206,16 @@ static void panel_thread(void *a, void *b, void *c)
 	probe_inputs();
 #if HAS_PANEL
 	gpio_pin_configure_dt(&panel_pin, GPIO_OUTPUT_INACTIVE);
+	/* nothing on the LEDs until 10 s after boot, then one all-dark frame first: whatever the LEDs latched
+	 * before (a crash, a power cut) is cleared, and a board that dies when it drives the panel can still
+	 * be reflashed in those 10 s */
+	k_msleep(8500);
+	memset(grb, 0, sizeof(grb));
+	LOG_INF("panel: first frame (dark) ... cycle counter %s", cyccnt_runs() ? "running" : "STOPPED");
+	if (cyccnt_runs()) {
+		ws2812_send(grb, sizeof(grb));
+	}
+	LOG_INF("panel: dark frame sent");
 #endif
 	for (uint32_t tick = 0;; tick++) {
 		int64_t now = k_uptime_get();
@@ -199,10 +226,21 @@ static void panel_thread(void *a, void *b, void *c)
 			int x = mcp3204(0), y = mcp3204(1);
 
 			if (x >= 0 && y >= 0) {
+				/* a flick right (past 90 % and back to the centre) toggles the high beam */
+				static bool armed = true;
+
+				if (x > 1000 && x < 3100) {
+					armed = true;
+				} else if (armed && x >= 3700) {
+					armed = false;
+					beam_on = !beam_on;
+					LOG_INF("stick flick right: high beam %s", beam_on ? "on" : "off");
+				}
 				stick_x = x;
 				stick_y = y;
 				zone_publish(ZONE_PUB_STICK_X, (const void *)&stick_x, 2);
 				zone_publish(ZONE_PUB_STICK_Y, (const void *)&stick_y, 2);
+				zone_publish(ZONE_PUB_BEAM, &beam_on, 1); /* 20 Hz like the stick: a late joiner sees it at once */
 			}
 		}
 #endif
@@ -237,7 +275,7 @@ static void panel_thread(void *a, void *b, void *c)
 			was_l = l;
 			was_r = r;
 			s.lamps = (l ? ZR_LEFT : 0) | (r ? ZR_RIGHT : 0) | (v.brake ? ZR_BRAKE : 0) |
-				  (v.reverse ? ZR_REVERSE : 0) | (v.hazard ? ZR_HAZARD : 0);
+				  (v.reverse ? ZR_REVERSE : 0) | (v.hazard ? ZR_HAZARD : 0) | (v.high_beam ? ZR_HIGH_BEAM : 0);
 			s.gear = v.gear;
 			s.speed = v.speed_kmh;
 			s.mode = v.mode;
@@ -286,6 +324,26 @@ static void panel_thread(void *a, void *b, void *c)
 		}
 
 		memset(grb, 0, sizeof(grb));
+		uint32_t sum = 0;
+
+		for (int y = 0; y < 10; y++) {
+			for (int x = 0; x < 10; x++) {
+				const uint8_t *p = out[y][x + 10 * h];
+
+				sum += p[0] + p[1] + p[2];
+			}
+		}
+		/* over the budget: scale the whole frame down (`out` is already at `bright`) */
+		if (sum > PANEL_BUDGET) {
+			budget_hits++;
+			for (int y = 0; y < 10; y++) {
+				for (int x = 0; x < 10; x++) {
+					for (int k = 0; k < 3; k++) {
+						out[y][x + 10 * h][k] = (uint8_t)((uint32_t)out[y][x + 10 * h][k] * PANEL_BUDGET / sum);
+					}
+				}
+			}
+		}
 		for (int y = 0; y < 10; y++) {
 			for (int x = 0; x < 10; x++) {
 				int i = led_index(x, y) * 3;
@@ -300,8 +358,14 @@ static void panel_thread(void *a, void *b, void *c)
 			}
 		}
 #if HAS_PANEL
-		if (!t1s_is_sleeping()) {
+		if (!t1s_is_sleeping() && cyccnt_runs()) {
+			if (frames < 3) {
+				LOG_INF("panel: frame %u (sum %u) ...", frames, sum);
+			}
 			ws2812_send(grb, sizeof(grb));
+			if (frames < 3) {
+				LOG_INF("panel: frame %u sent", frames);
+			}
 		}
 #endif
 		frames++;
@@ -337,6 +401,8 @@ static int cmd_panel(const struct shell *sh, size_t argc, char **argv)
 		    half == 0 ? "left" : half == 1 ? "right" : "auto (PLCA id odd = left)", map_bits, map_bits & 1,
 		    (map_bits >> 1) & 1, (map_bits >> 2) & 1, (map_bits >> 3) & 1, (double)bright, frames,
 		    have_stick ? "thumbstick" : have_prox ? "proximity" : "none", stick_x, stick_y, prox_raw);
+	shell_print(sh, "panel: current budget %u (sum of channel values per frame), frames scaled down %u", PANEL_BUDGET,
+		    budget_hits);
 	return 0;
 }
 SHELL_CMD_REGISTER(panel, NULL, "panel [map <bits>|bright <0.02..0.3>|half left|right|auto|pattern on|off|test]", cmd_panel);

@@ -34,7 +34,10 @@ static bool ack_ok;
 static const char *const sensor_keys[ZONE_PUB_COUNT] = {
 	"vehicle/private/zone/stick/x", "vehicle/private/zone/stick/y",
 	"vehicle/private/zone/proximity/raw", "vehicle/private/external/proximity_rear",
-	"t1s/sam%u/panel" /* this node's 10x10 picture, 300 B RGB row-major, as drawn (before `panel map`) */};
+	"t1s/sam%u/panel" /* this node's 10x10 picture, 300 B RGB row-major, as drawn (before `panel map`) */,
+	/* the high beam is a zone function here: Autoware / the CARLA interface have no headlights, the zone node that
+	 * owns the stick switches it and every zone shows it */
+	"vehicle/private/zone/lights/beam/high"};
 static z_owned_publisher_t pub_sensor[ZONE_PUB_COUNT];
 static volatile bool sensors_ok;
 static K_MUTEX_DEFINE(pub_lock);
@@ -64,8 +67,9 @@ SETTINGS_STATIC_HANDLER_DEFINE(zz, "zenoh", NULL, zz_set, NULL, NULL);
 
 static void ack(const char *msg)
 {
-	/* runs in zenoh's read task: never wait for pub_lock (the teardown holds it while it stops this task) */
-	if (!ack_ok || k_mutex_lock(&pub_lock, K_NO_WAIT)) {
+	/* runs in zenoh's read task: wait for pub_lock only briefly (the teardown holds it while it stops this task,
+	 * so an unbounded wait could deadlock; K_NO_WAIT lost ~10 % of the acks to the 20 Hz sensor sends) */
+	if (!ack_ok || k_mutex_lock(&pub_lock, K_MSEC(10))) {
 		return;
 	}
 	if (ack_ok) {

@@ -300,6 +300,117 @@ static int cmd_forget(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/*
+ * Bus diagnostics, accumulated since boot from the LAN8651's clear-on-read counters (the registers the
+ * ESP T1S HAT firmware uses for `txstat`): MMS1 STATS8..11 (TX aborts, excess collisions, frames sent on
+ * the wire), MMS4 PLCA transmit-opportunity and beacon counters (enabled by CTRCTRL), MMS0 STATUS0/1 sticky
+ * errors and BUFSTS credits. Read once a second from the main loop.
+ */
+static struct {
+	uint64_t wire_tx, to, beacons;
+	uint32_t xcol, tx_abort, polls;
+	uint32_t st0_seen, st1_seen; /* every STATUS0/1 bit ever set */
+	uint32_t to_rate, bcn_rate, tx_rate; /* last second */
+	uint8_t credits_min;
+} dg = {.credits_min = 0xff};
+
+static void diag_poll(void)
+{
+	uint32_t v = 0, h = 0, l = 0;
+
+	if (!dg.polls) {
+		t1s_reg_write(t1s, 0x00040020, 0x3); /* CTRCTRL: TOCTRE | BCNCTRE */
+	}
+	dg.polls++;
+	if (!t1s_reg_read(t1s, 0x00010213, &v)) { /* STATS11: frames transmitted */
+		dg.wire_tx += v;
+		dg.tx_rate = v;
+	}
+	if (!t1s_reg_read(t1s, 0x00010212, &v)) { /* STATS10: excess collisions */
+		dg.xcol += v & 0xff;
+	}
+	if (!t1s_reg_read(t1s, 0x00010210, &v)) { /* STATS8: TX aborts (internal error) */
+		dg.tx_abort += v & 0xff;
+	}
+	if (!t1s_reg_read(t1s, 0x00010211, &v)) { /* STATS9: TX aborts (error), FIFO under/overrun */
+		dg.tx_abort += (v >> 24) + ((v >> 16) & 0xff) + ((v >> 8) & 0xff);
+	}
+	if (!t1s_reg_read(t1s, 0x00040024, &h) && !t1s_reg_read(t1s, 0x00040025, &l)) {
+		dg.to_rate = (h & 0xffff) << 16 | (l & 0xffff);
+		dg.to += dg.to_rate;
+	}
+	if (!t1s_reg_read(t1s, 0x00040026, &h) && !t1s_reg_read(t1s, 0x00040027, &l)) {
+		dg.bcn_rate = (h & 0xffff) << 16 | (l & 0xffff);
+		dg.beacons += dg.bcn_rate;
+	}
+	if (!t1s_reg_read(t1s, 0x00000008, &v)) {
+		dg.st0_seen |= v & ~BIT(8); /* TTSCAA is the PTP stamp, not an error */
+	}
+	if (!t1s_reg_read(t1s, 0x00000009, &v)) {
+		dg.st1_seen |= v;
+	}
+	if (!t1s_reg_read(t1s, 0x0000000b, &v)) { /* BUFSTS: TX credits in 15:8 */
+		dg.credits_min = MIN(dg.credits_min, (v >> 8) & 0xff);
+	}
+}
+
+static int cmd_diag(const struct shell *sh, size_t argc, char **argv)
+{
+	shell_print(sh, "diag: wire tx %llu (%u/s) | beacons %llu (%u/s) | tx opportunities %llu (%u/s) | xcol %u | "
+		    "tx aborts %u | status0 seen 0x%08x status1 seen 0x%08x | tx credits min %u | %u s",
+		    (unsigned long long)dg.wire_tx, dg.tx_rate, (unsigned long long)dg.beacons, dg.bcn_rate,
+		    (unsigned long long)dg.to, dg.to_rate, dg.xcol, dg.tx_abort, dg.st0_seen, dg.st1_seen,
+		    dg.credits_min, dg.polls);
+	if (argc > 1 && !strcmp(argv[1], "reset")) {
+		uint32_t polls = dg.polls;
+
+		memset(&dg, 0, sizeof(dg));
+		dg.credits_min = 0xff;
+		dg.polls = polls;
+	}
+	return 0;
+}
+
+static const struct gpio_dt_spec wake_in = GPIO_DT_SPEC_GET_OR(DT_PATH(zephyr_user), t1s_wake_gpios, {0});
+static const struct gpio_dt_spec inh = GPIO_DT_SPEC_GET_OR(DT_PATH(zephyr_user), t1s_inh_gpios, {0});
+
+static int cmd_sleep(const struct shell *sh, size_t argc, char **argv)
+{
+	/* wake sources: WAKE_IN (our own pin, `t1s wake`) and/or bus activity >= 450 us (a long frame or
+	 * another node's wake signal; the coordinator's short beacons do not count) */
+	const char *how = argc > 1 ? argv[1] : "both";
+	uint16_t src = !strcmp(how, "wi") ? BIT(14) : !strcmp(how, "mdi") ? BIT(13) : BIT(14) | BIT(13);
+
+	net_if_carrier_off(iface);
+	int ret = t1s_sleep(t1s, src);
+
+	shell_print(sh, "t1s: LAN8651 asleep (wake on %s) -> %d; `t1s wake` pulses WAKE_IN", how, ret);
+	return ret;
+}
+
+static int cmd_wake(const struct shell *sh, size_t argc, char **argv)
+{
+	int64_t t0 = k_uptime_get();
+	int ret = t1s_wake(t1s, &wake_in);
+	struct t1s_status st;
+	int64_t t_sync = -1;
+
+	for (int i = 0; i < 300 && ret == 0; i++) { /* up to 3 s for the reset, re-sync and the beacons */
+		k_msleep(10);
+		if (t1s_read_status(t1s, &st) == 0 && (st.plca_sts & BIT(15))) {
+			t_sync = k_uptime_get() - t0;
+			break;
+		}
+	}
+	uint32_t sts2 = 0;
+
+	t1s_reg_read(t1s, 0x00040019, &sts2); /* STS2: WKEMDI 10, WKEWI 9 (read-to-clear) */
+	net_if_carrier_on(iface);
+	shell_print(sh, "t1s: wake -> %d, beacons back after %lld ms, wake source%s%s", ret, (long long)t_sync,
+		    (sts2 & BIT(10)) ? " MDI" : "", (sts2 & BIT(9)) ? " WAKE_IN" : (sts2 & BIT(10)) ? "" : " (none flagged)");
+	return ret;
+}
+
 static int cmd_reg(const struct shell *sh, size_t argc, char **argv)
 {
 	if (argc < 2) {
@@ -321,6 +432,9 @@ static int cmd_reg(const struct shell *sh, size_t argc, char **argv)
 
 SHELL_STATIC_SUBCMD_SET_CREATE(t1s_cmds,
 	SHELL_CMD(reg, NULL, "t1s reg <reg> [value]: raw LAN865x register (hex)", cmd_reg),
+	SHELL_CMD(diag, NULL, "t1s diag [reset]: bus counters since boot", cmd_diag),
+	SHELL_CMD(sleep, NULL, "t1s sleep [wi|mdi|both]: LAN8651 to sleep, wake sources", cmd_sleep),
+	SHELL_CMD(wake, NULL, "t1s wake: pulse WAKE_IN, wait for the bus", cmd_wake),
 	SHELL_CMD(status, NULL, "LAN865x PLCA / link / counters", cmd_status),
 	SHELL_CMD(plca, NULL, "t1s plca <id|csma> [count] [to_timer]", cmd_plca),
 	SHELL_CMD(ip, NULL, "t1s ip <a.b.c.d>", cmd_ip),
@@ -350,6 +464,12 @@ int main(void)
 		LOG_INF("new image confirmed (%d)", boot_write_img_confirmed());
 	}
 #endif
+	if (wake_in.port && device_is_ready(wake_in.port)) {
+		gpio_pin_configure_dt(&wake_in, GPIO_OUTPUT_INACTIVE);
+	}
+	if (inh.port && device_is_ready(inh.port)) {
+		gpio_pin_configure_dt(&inh, GPIO_INPUT);
+	}
 	set_mac_from_eeprom();
 	pick_identity();
 #ifdef CONFIG_NET_GPTP
@@ -390,7 +510,25 @@ int main(void)
 
 	while (1) {
 		struct t1s_status st;
-		bool pst = (t1s_read_status(t1s, &st) == 0) && (st.plca_sts & BIT(15));
+
+		if (t1s_is_sleeping()) { /* the chip is off the SPI bus: a short blip every 2 s */
+			if (wdt_ch >= 0) {
+				wdt_feed(wdt, wdt_ch);
+			}
+			gpio_pin_set_dt(&led, (k_uptime_get() % 2000) < 50);
+			k_msleep(25);
+			continue;
+		}
+		bool rd = t1s_read_status(t1s, &st) == 0;
+		bool pst = rd && (st.plca_sts & BIT(15));
+
+		/* after any LAN8651 reset (a wake from sleep, the driver's SYNC-lost recovery) the chip comes back
+		 * with the devicetree PLCA settings, not ours: put ours back */
+		if (rd && (st.plca_ctrl1 & 0xff) != plca_cfg.t1s_param.plca.node_id &&
+		    plca_cfg.t1s_param.plca.enable) {
+			LOG_INF("chip reset: PLCA %u -> %u", st.plca_ctrl1 & 0xff, plca_cfg.t1s_param.plca.node_id);
+			apply_plca();
+		}
 
 		if (wdt_ch >= 0) {
 			wdt_feed(wdt, wdt_ch);
@@ -449,6 +587,12 @@ int main(void)
 			} else {
 				gpio_pin_toggle_dt(&led);
 			}
+		}
+		static int64_t next_diag;
+
+		if (k_uptime_get() >= next_diag) {
+			diag_poll();
+			next_diag = k_uptime_get() + 1000;
 		}
 		if (CONFIG_APP_STATUS_PERIOD_S && k_uptime_get() >= next) {
 			print_status(NULL);

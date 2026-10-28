@@ -97,3 +97,49 @@ int t1s_take_tx_stamp(const struct device *dev, uint64_t *ts, int timeout_ms)
 	clear_capture(dev); /* never leave a stamp or an overflow behind for the next request */
 	return ret;
 }
+
+#include <zephyr/drivers/gpio.h>
+
+#define SLPCTL0 0x00040080 /* MMS4 0x80: SLPEN 15, WKINEN 14, MDIWKEN 13, SLPINHDLY 12:11, SLPCAL 6:3 (write 0) */
+#define SLPCTL1 0x00040081 /* MMS4 0x81: WOPOL 7 (must be 1), WIPOL 5, MDIFWDEN 0 */
+
+static volatile bool sleeping;
+
+bool t1s_is_sleeping(void) { return sleeping; }
+
+int t1s_sleep(const struct device *dev, uint16_t wake_sources)
+{
+	struct lan865x_data *ctx = dev->data;
+	uint32_t v = 0;
+
+	if (sleeping || k_sem_take(&ctx->tx_rx_sem, K_MSEC(500)) != 0) {
+		return -EBUSY;
+	}
+	/* active-high WAKE_IN; on a WAKE_IN wake also signal the bus (MDI forward) so the segment wakes */
+	oa_tc6_reg_write(ctx->tc6, SLPCTL1, BIT(7) | BIT(5) | BIT(0));
+	oa_tc6_reg_read(ctx->tc6, SLPCTL0, &v);
+	v &= ~(BIT(15) | BIT(14) | BIT(13) | (3u << 11) | (0xfu << 3));
+	v |= (wake_sources & (BIT(14) | BIT(13))) | BIT(15);
+	sleeping = true;
+	oa_tc6_reg_write(ctx->tc6, SLPCTL0, v); /* SLPEN: the chip is gone after this write */
+	return 0;
+}
+
+int t1s_wake(const struct device *dev, const struct gpio_dt_spec *wi)
+{
+	struct lan865x_data *ctx = dev->data;
+
+	if (!sleeping) {
+		return -EALREADY;
+	}
+	if (wi && wi->port) {
+		gpio_pin_set_dt(wi, 1);
+		k_busy_wait(100); /* tdet_wi max 40 us */
+		gpio_pin_set_dt(wi, 0);
+	}
+	k_msleep(5);
+	sleeping = false;
+	k_sem_give(&ctx->tx_rx_sem); /* the driver finds SYNC lost and resets + reconfigures the chip */
+	k_sem_give(&ctx->int_sem);
+	return 0;
+}

@@ -27,3 +27,12 @@
 		status = "okay";
 	};
 };
+
+/* The click's WI (wake in, on the slot's PWM pin) and INH (inhibit out, on AN) for sleep/wake (TC10-style,
+ * LAN8650/1 DS60001734F 4.4): the host pulses WI high >= 40 us to wake its own LAN8651. */
+/ {
+	zephyr,user {
+		t1s-wake-gpios = <&mikrobus_1 6 GPIO_ACTIVE_HIGH>;
+		t1s-inh-gpios = <&mikrobus_1 0 GPIO_ACTIVE_HIGH>;
+	};
+};

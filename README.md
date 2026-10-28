@@ -130,6 +130,18 @@ LED0: 켜짐 고정 = PLCA 비컨 수신(버스 동작), 1 Hz 깜빡임 = 코디
    프로브를 고르면 `*** buffer overflow detected ***` 로 abort 한다(usb_bulk 백엔드는 nEDBG 를 못 찾음). 우회: 다른 보드의 USB 를 잠시
    숨기고 단독으로 굽는다 — `tools/flash_one.sh <serial끝자리> <hex>`.
 
+## 존 노드의 얼굴과 손 (슬롯 2·3, v0.10)
+
+| 슬롯 | 클릭 | 쓰임 |
+|---|---|---|
+| 2 | **MIKROE-4115 10×10 RGB** (WS2812, DI = PWM 핀 PA11) | ESP 존 컨트롤러와 같은 20×10 차 그림(`zone_render.h`, elite-t1s-hat 에서 가져옴)의 **이 존 몫 절반**: 기어·속도·지시등 스윕·브레이크/후진 줄·페달·핸들·근접 막대. 두 노드가 합쳐 한 그림 |
+| 3 | Thumbstick (MCP3204, 공유 SPI CS=PB04) **또는** Proximity (VCNL4200, 공유 I2C 0x51) | 부팅 때 어느 쪽인지 자동 감지, 20 Hz 로 `vehicle/private/zone/stick/x|y`, `.../proximity/raw`, `vehicle/private/external/proximity_rear`(m) 발행 — ESP 존 컨트롤러와 같은 키 |
+
+WS2812 는 사이클 카운터로 비트뱅(프레임당 인터럽트 정지 3 ms). 밝기 상한 `panel bright`(기본 0.12, 최대 0.3 — 흰색 100 개 전부면 ~6 A).
+LED 배선 순서는 문서가 없어 `panel test`(0→99 번을 하나씩 켬)로 보고 `panel map <bits>`(1 지그재그, 2 좌우, 4 상하, 8 열 우선)로 맞춘다(저장).
+어느 절반: `panel half left|right|auto`(auto = PLCA id 홀수 왼쪽). 슬롯 3 의 GPIO 램프 출력은 이제 기본 꺼짐(`LAMP_SLOT=0`) — 입력 클릭의 핀과 겹친다.
+빌드 옵션 `-Dnode_PANEL_SLOT=` / `-Dnode_SENSOR_SLOT=`(0 = 없음). **실기 미검증**(2026-10-28 클릭 장착 중).
+
 ## 슬롯 계획
 
 AC164162 베이스의 **Xplained Pro 확장 헤더는 슬롯 2·3 과 핀을 공유**한다(DS50002839B p.5: "The Xplained Pro extension header is shared with
@@ -137,7 +149,7 @@ mikroBUS socket 2 and 3"). 슬롯 1 은 UART 만 슬롯 3 과 같고(T1S 클릭�
 
 | 배치 | 슬롯 1 | 슬롯 2 | 슬롯 3 | 빌드 |
 |---|---|---|---|---|
-| **현재(기본, 2026-10-28~)** | **T1S** (헤더와 안 겹침) | 모터(PWM) | 램프(GPIO) | 옵션 없음 |
+| **현재(기본, 2026-10-28~)** | **T1S** (헤더와 안 겹침) | 10×10 RGB (모터는 다음) | 조이스틱 / 근접 | 옵션 없음 |
 | 이전 | 램프(PWM, 미등 감광 가능) | 모터(PWM) | T1S | `-Dnode_T1S_SLOT=3 -Dnode_LAMP_SLOT=1` |
 
 클릭을 옮기면 그 보드는 USB 로 한 번 다시 구워야 한다(옛 이미지는 새 슬롯의 T1S 를 못 찾아 네트워크가 없다). 같은 슬롯을 둘 다 주면 빌드가 멈춘다.

@@ -32,6 +32,9 @@ static const struct gpio_dt_spec out_left = LAMP(lamp_left), out_right = LAMP(la
 				 out_brake = LAMP(lamp_brake), out_rev = LAMP(lamp_reverse);
 
 static volatile uint8_t sig_left, sig_right, sig_hazard, sig_brake, sig_rev, gear = 126;
+static volatile float v_speed, v_prox = -1;
+static volatile int16_t v_wheel;
+static volatile uint8_t v_accel, v_brake_pedal, v_mode;
 static volatile int64_t last_live;
 static uint32_t n_keys;
 volatile int zone_lamp_led = -1; /* LED0 override from the lamps: -1 none, 0/1 */
@@ -71,7 +74,46 @@ void zone_lamps_on_vss(const char *k, const uint8_t *b, size_t n)
 		sig_rev = b[0];
 	} else if (!strcmp(k, "powertrain/transmission/selectedgear")) {
 		gear = b[0];
+	} else if (!strcmp(k, "chassis/steeringwheel/angle") && n >= 2) {
+		v_wheel = (int16_t)(b[0] | b[1] << 8);
+	} else if (!strcmp(k, "chassis/accelerator/pedalposition")) {
+		v_accel = b[0];
+	} else if (!strcmp(k, "chassis/brake/pedalposition")) {
+		v_brake_pedal = b[0];
+	} else if (!strcmp(k, "private/drivingmode")) {
+		v_mode = b[0];
+	} else if (!strcmp(k, "private/external/proximity_rear") && n >= 4) {
+		float f;
+
+		memcpy(&f, b, 4);
+		v_prox = f;
 	}
+	if (!strcmp(k, "speed") && n >= 4) {
+		float f;
+
+		memcpy(&f, b, 4);
+		v_speed = f;
+	}
+}
+
+bool zone_vehicle(struct zone_vehicle *v)
+{
+	bool live = last_live && k_uptime_get() - last_live < STALE_MS;
+
+	v->left = live && (sig_left || sig_hazard);
+	v->right = live && (sig_right || sig_hazard);
+	v->lit = (v->left || v->right) && lit_now();
+	v->hazard = sig_hazard;
+	v->brake = sig_brake;
+	v->reverse = sig_rev;
+	v->gear = (int8_t)gear == -1 ? 'R' : gear == 0 ? 'N' : gear == 127 ? 'D' : 'P';
+	v->speed_kmh = v_speed;
+	v->wheel_deg = v_wheel;
+	v->accel = v_accel / 100.0f;
+	v->brake_pedal = v_brake_pedal / 100.0f;
+	v->mode = v_mode;
+	v->prox_m = v_prox;
+	return live;
 }
 
 static void set(const struct gpio_dt_spec *o, int v)

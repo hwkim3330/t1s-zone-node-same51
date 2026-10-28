@@ -18,3 +18,16 @@ extern volatile int zone_lamp_led;
 
 /* ptp.c: last offset to the master (ns), INT64_MIN when not locked */
 int64_t zone_ptp_offset_ns(void);
+
+/* zone_lamps.c: the vehicle as the VSS keys describe it, for the 10x10 panel; false = no car (stale) */
+struct zone_vehicle {
+	bool left, right, lit, hazard, brake, reverse;
+	char gear;
+	float speed_kmh, wheel_deg, accel, brake_pedal, prox_m;
+	uint8_t mode;
+};
+bool zone_vehicle(struct zone_vehicle *v);
+
+/* zone_zenoh.c: publish one sensor value (key below "vehicle/", one little-endian scalar) if connected */
+enum { ZONE_PUB_STICK_X, ZONE_PUB_STICK_Y, ZONE_PUB_PROX_RAW, ZONE_PUB_PROX_M, ZONE_PUB_COUNT };
+void zone_publish(int which, const void *b, size_t n);

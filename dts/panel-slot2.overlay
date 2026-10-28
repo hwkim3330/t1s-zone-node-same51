@@ -1,0 +1,10 @@
+/*
+ * MIKROE-4115 10x10 RGB Click in mikroBUS slot 2: 100 WS2812-type LEDs, DI on the slot's PWM pin
+ * (PA11). Bit-banged from the cycle counter (src/zone_panel.c); powered from the base's 5 V, the
+ * firmware caps the brightness. The LED order on the board is set with `panel map` (saved).
+ */
+/ {
+	zephyr,user {
+		panel-gpios = <&mikrobus_2 6 GPIO_ACTIVE_HIGH>;
+	};
+};

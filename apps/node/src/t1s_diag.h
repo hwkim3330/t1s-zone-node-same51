@@ -2,6 +2,7 @@
 #pragma once
 #include <stdint.h>
 #include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
 
 struct t1s_status {
 	uint32_t devid;      /* 0x0A0094: chip id << 4 | silicon rev */
@@ -26,3 +27,10 @@ int t1s_reg_write(const struct device *dev, uint32_t reg, uint32_t val);
 /* Egress stamp of the last frame sent with a capture request (seconds << 32 | ns).
  * Waits up to timeout_ms; -EAGAIN if none. Needs the zephyr LOCAL PATCH (zephyr-patches/). */
 int t1s_take_tx_stamp(const struct device *dev, uint64_t *ts, int timeout_ms);
+
+/* Sleep (LAN8650/1 DS60001734F 4.4): wake sources in SLPCTL0 bits (WKINEN 14, MDIWKEN 13). Holds the driver's
+ * SPI lock until t1s_wake() so the driver does not reset (= wake) the sleeping chip. */
+int t1s_sleep(const struct device *dev, uint16_t wake_sources);
+/* Pulse WAKE_IN (given pin) and hand the chip back to the driver, which re-syncs it after the wake reset. */
+int t1s_wake(const struct device *dev, const struct gpio_dt_spec *wi);
+bool t1s_is_sleeping(void);

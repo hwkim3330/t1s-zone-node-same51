@@ -30,6 +30,25 @@ static uint32_t n_hello, n_cmd, n_open_fail, n_reconnect;
 static volatile int64_t last_rx_ms;
 static z_owned_publisher_t pub_ack;
 static bool ack_ok;
+/* the zone's sensors, on the keys the ESP zone controller uses (the vehicle-API sidecar forwards external/...) */
+static const char *const sensor_keys[ZONE_PUB_COUNT] = {
+	"vehicle/private/zone/stick/x", "vehicle/private/zone/stick/y",
+	"vehicle/private/zone/proximity/raw", "vehicle/private/external/proximity_rear"};
+static z_owned_publisher_t pub_sensor[ZONE_PUB_COUNT];
+static volatile bool sensors_ok;
+static K_MUTEX_DEFINE(pub_lock);
+
+void zone_publish(int which, const void *b, size_t n)
+{
+	if (!sensors_ok || which < 0 || which >= ZONE_PUB_COUNT || k_mutex_lock(&pub_lock, K_MSEC(5))) {
+		return;
+	}
+	z_owned_bytes_t pl;
+
+	z_bytes_copy_from_buf(&pl, b, n);
+	z_publisher_put(z_publisher_loan(&pub_sensor[which]), z_bytes_move(&pl), NULL);
+	k_mutex_unlock(&pub_lock);
+}
 
 static int zz_set(const char *key, size_t len, settings_read_cb read, void *arg)
 {
@@ -152,6 +171,11 @@ static void zenoh_thread(void *a, void *b, void *c)
 		z_closure(&c3, on_vehicle, NULL, NULL);
 		z_declare_subscriber(z_session_loan(&s), &sub3, z_view_keyexpr_loan(&k), z_closure_sample_move(&c3), NULL);
 
+		for (int i = 0; i < ZONE_PUB_COUNT; i++) {
+			z_view_keyexpr_from_str_unchecked(&k, sensor_keys[i]);
+			z_declare_publisher(z_session_loan(&s), &pub_sensor[i], z_view_keyexpr_loan(&k), NULL);
+		}
+		sensors_ok = true;
 		connected = true;
 		last_rx_ms = k_uptime_get();
 		LOG_INF("zenoh: connected to %s as t1s/sam%u", locator, id);
@@ -187,6 +211,12 @@ static void zenoh_thread(void *a, void *b, void *c)
 		LOG_WRN("zenoh: session lost, reconnecting");
 		connected = false;
 		ack_ok = false;
+		k_mutex_lock(&pub_lock, K_FOREVER);
+		sensors_ok = false;
+		for (int i = 0; i < ZONE_PUB_COUNT; i++) {
+			z_undeclare_publisher(z_publisher_move(&pub_sensor[i]));
+		}
+		k_mutex_unlock(&pub_lock);
 		z_undeclare_subscriber(z_subscriber_move(&sub1));
 		z_undeclare_subscriber(z_subscriber_move(&sub2));
 		z_undeclare_subscriber(z_subscriber_move(&sub3));

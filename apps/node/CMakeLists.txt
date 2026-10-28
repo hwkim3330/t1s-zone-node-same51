@@ -25,6 +25,8 @@ function(sysbuild_option var)
 endfunction()
 sysbuild_option(T1S_SLOT)
 sysbuild_option(LAMP_SLOT)
+sysbuild_option(PANEL_SLOT)
+sysbuild_option(SENSOR_SLOT)
 
 # Which mikroBUS slot holds the Two-Wire ETH click (found by apps/probe).
 set(T1S_SLOT 1 CACHE STRING "mikroBUS slot (1-3) of the MIKROE-5543 click")
@@ -36,7 +38,22 @@ set(ZENOH_PICO_DIR $ENV{HOME}/esp32-t1s-bridge/vendor/zenoh-pico CACHE PATH "zen
 list(APPEND ZEPHYR_EXTRA_MODULES ${ZENOH_PICO_DIR})
 
 # Zone lamp outputs (left/right/brake/reverse) on a free mikroBUS slot; 0 = none
-set(LAMP_SLOT 3 CACHE STRING "mikroBUS slot for the zone lamp outputs (0 = none)")
+set(LAMP_SLOT 0 CACHE STRING "mikroBUS slot for plain GPIO lamp outputs (0 = none; the 10x10 panel shows the lamps)")
+set(PANEL_SLOT 2 CACHE STRING "mikroBUS slot of the 10x10 RGB click (0 = none)")
+set(SENSOR_SLOT 3 CACHE STRING "mikroBUS slot of the thumbstick / proximity click (0 = none)")
+foreach(s PANEL_SLOT SENSOR_SLOT)
+  if(NOT ${s} STREQUAL "0")
+    if(${s} STREQUAL T1S_SLOT)
+      message(FATAL_ERROR "${s} ${${s}} is the T1S click's slot")
+    endif()
+  endif()
+endforeach()
+if(NOT PANEL_SLOT STREQUAL "0")
+  list(APPEND EXTRA_DTC_OVERLAY_FILE ${CMAKE_CURRENT_LIST_DIR}/../../dts/panel-slot${PANEL_SLOT}.overlay)
+endif()
+if(NOT SENSOR_SLOT STREQUAL "0")
+  list(APPEND EXTRA_DTC_OVERLAY_FILE ${CMAKE_CURRENT_LIST_DIR}/../../dts/sensors-slot${SENSOR_SLOT}.overlay)
+endif()
 if(LAMP_SLOT STREQUAL T1S_SLOT)
   message(FATAL_ERROR "LAMP_SLOT ${LAMP_SLOT} is the T1S click's slot: pick another (README: Slot plan)")
 endif()
@@ -55,7 +72,7 @@ if(CONFIG_APP_ZENOH)
   # the module does not run zenoh-pico's configure step; this is its config.h
   zephyr_include_directories(${CMAKE_CURRENT_LIST_DIR}/zenoh-config)
   zephyr_compile_definitions(ZENOH_LOG_WARN)
-  target_sources(app PRIVATE src/zone_zenoh.c src/zone_lamps.c)
+  target_sources(app PRIVATE src/zone_zenoh.c src/zone_lamps.c src/zone_panel.c)
 endif()
 # t1s_diag.c reads PLCA status through the in-tree driver's OA TC6 helpers
 target_include_directories(app PRIVATE

@@ -64,13 +64,17 @@ SETTINGS_STATIC_HANDLER_DEFINE(zz, "zenoh", NULL, zz_set, NULL, NULL);
 
 static void ack(const char *msg)
 {
-	if (!ack_ok) {
+	/* runs in zenoh's read task: never wait for pub_lock (the teardown holds it while it stops this task) */
+	if (!ack_ok || k_mutex_lock(&pub_lock, K_NO_WAIT)) {
 		return;
 	}
-	z_owned_bytes_t b;
+	if (ack_ok) {
+		z_owned_bytes_t b;
 
-	z_bytes_copy_from_str(&b, msg);
-	z_publisher_put(z_publisher_loan(&pub_ack), z_bytes_move(&b), NULL);
+		z_bytes_copy_from_str(&b, msg);
+		z_publisher_put(z_publisher_loan(&pub_ack), z_bytes_move(&b), NULL);
+	}
+	k_mutex_unlock(&pub_lock);
 }
 
 static void on_cmd(z_loaned_sample_t *sample, void *arg)
@@ -200,8 +204,19 @@ static void zenoh_thread(void *a, void *b, void *c)
 				 "{\"id\":%u,\"ip\":\"%s\",\"up\":%u,\"pst\":%d,\"cmds\":%u,\"ptp_ns\":%s,\"rst\":%u}", id, ip,
 				 (unsigned)(k_uptime_get() / 1000), zone_bus_up(), n_cmd, ptp, zone_reset_cause);
 			z_bytes_copy_from_str(&pl, msg);
-			if (z_publisher_put(z_publisher_loan(&hello), z_bytes_move(&pl), NULL) < 0 ||
-			    z_session_is_closed(z_session_loan(&s))) {
+			/*
+			 * A put that fails is not a lost session: with the transmit lock busy (the panel thread's
+			 * sensors, an ack) zenoh-pico drops the message and returns EBUSY ("System error: 16").
+			 * Treating that as a loss made the node reconnect every few seconds under load, and the
+			 * teardown raced the other senders (bus fault in _z_wbuf_write, 2026-10-28).
+			 */
+			if (!k_mutex_lock(&pub_lock, K_MSEC(20))) {
+				z_publisher_put(z_publisher_loan(&hello), z_bytes_move(&pl), NULL);
+				k_mutex_unlock(&pub_lock);
+			} else {
+				z_bytes_drop(z_bytes_move(&pl));
+			}
+			if (z_session_is_closed(z_session_loan(&s))) {
 				break;
 			}
 			if (k_uptime_get() - last_rx_ms > WATCHDOG_MS) {
@@ -213,22 +228,23 @@ static void zenoh_thread(void *a, void *b, void *c)
 			k_msleep(1000);
 		}
 		LOG_WRN("zenoh: session lost, reconnecting");
+		/* no sender may touch the session from here: then the tasks stop, then everything is freed */
+		k_mutex_lock(&pub_lock, K_FOREVER);
 		connected = false;
 		ack_ok = false;
-		k_mutex_lock(&pub_lock, K_FOREVER);
 		sensors_ok = false;
-		for (int i = 0; i < ZONE_PUB_COUNT; i++) {
-			z_undeclare_publisher(z_publisher_move(&pub_sensor[i]));
-		}
-		k_mutex_unlock(&pub_lock);
+		zp_stop_read_task(z_session_loan_mut(&s));
+		zp_stop_lease_task(z_session_loan_mut(&s));
 		z_undeclare_subscriber(z_subscriber_move(&sub1));
 		z_undeclare_subscriber(z_subscriber_move(&sub2));
 		z_undeclare_subscriber(z_subscriber_move(&sub3));
 		z_undeclare_publisher(z_publisher_move(&hello));
 		z_undeclare_publisher(z_publisher_move(&pub_ack));
-		zp_stop_read_task(z_session_loan_mut(&s));
-		zp_stop_lease_task(z_session_loan_mut(&s));
+		for (int i = 0; i < ZONE_PUB_COUNT; i++) {
+			z_undeclare_publisher(z_publisher_move(&pub_sensor[i]));
+		}
 		z_session_drop(z_session_move(&s));
+		k_mutex_unlock(&pub_lock);
 		k_msleep(1000);
 	}
 }

@@ -41,6 +41,10 @@ def post(path, body, timeout=10):
     return json.load(urllib.request.urlopen(r, timeout=timeout))
 
 
+def fresh(age):
+    return age is not None and age < 5   # an age of 0.0 is the freshest, not missing
+
+
 def log(*m):
     print(time.strftime('%T'), *m, flush=True)
 
@@ -62,8 +66,8 @@ while True:
               'alive': n['hello_age'] is not None and n['hello_age'] < 5, 'panel': n.get('panel')}
              for n in z.get('nodes', []) if n.get('id') is not None]
     s = z.get('sensors', {})
-    sensors = {k: s.get(k) for k in ('stick_x', 'stick_y', 'prox_raw', 'prox_m')} if (s.get('age') or 99) < 5 else {}
-    car = z.get('car', {}) if (z.get('car_age') or 99) < 5 else {}
+    sensors = {k: s.get(k) for k in ('stick_x', 'stick_y', 'prox_raw', 'prox_m')} if fresh(s.get('age')) else {}
+    car = z.get('car', {}) if fresh(z.get('car_age')) else {}
     lamps = {k: int(bool(car.get(v))) for k, v in (
         ('high', 'body/lights/beam/high/ison'), ('low', 'body/lights/beam/low/ison'),
         ('tail', 'body/lights/parking/ison'), ('left', 'body/lights/directionindicator/left/issignaling'),

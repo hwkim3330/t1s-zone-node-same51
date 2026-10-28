@@ -199,6 +199,17 @@ static void probe_inputs(void)
 	LOG_INF("slot 3 input: %s", have_stick ? "thumbstick (MCP3204)" : have_prox ? "proximity (VCNL4200)" : "none");
 }
 
+/* the stick rested in the centre long enough before this excursion (kept across the excursion) */
+static bool last_flick_rest(int64_t centred_since, int64_t now)
+{
+	static int64_t rested_until;
+
+	if (centred_since && now - centred_since >= 250) {
+		rested_until = now; /* still centred and rested */
+	}
+	return centred_since == 0 && now - rested_until < 300;
+}
+
 /* ------------------------------------------------------------------ the loop */
 static void panel_thread(void *a, void *b, void *c)
 {
@@ -233,17 +244,31 @@ static void panel_thread(void *a, void *b, void *c)
 			int x = mcp3204(0), y = mcp3204(1);
 
 			if (x >= 0 && y >= 0) {
-				/* a flick right (past 90 % and back to the centre) toggles the high beam */
-				static bool armed = true;
+				/*
+				 * Flicks: right toggles the high beam, left switches every zone's panel view. The stick
+				 * springs back past the centre, so a flick counts only after the stick has rested in the
+				 * centre for 250 ms, and nothing counts for 500 ms after one (else the spring-back reads as
+				 * a flick the other way: seen 2026-10-28, left then "right" 0.9 s later).
+				 */
+				static int64_t centred_since, last_flick;
+				bool centre = x > 1000 && x < 3100;
 
-				if (x > 1000 && x < 3100) {
-					armed = true;
-				} else if (armed && x >= 3700) {
-					armed = false;
+				if (centre) {
+					if (!centred_since) {
+						centred_since = now;
+					}
+				} else {
+					centred_since = 0;
+				}
+				bool rested = last_flick_rest(centred_since, now); /* every tick: it tracks the rest */
+				bool ready = !centre && now - last_flick > 500 && rested;
+
+				if (ready && x >= 3700) {
+					last_flick = now;
 					beam_on = !beam_on;
 					LOG_INF("stick flick right: high beam %s", beam_on ? "on" : "off");
-				} else if (armed && x <= 400) { /* a flick left: every zone between the lamps and the cluster */
-					armed = false;
+				} else if (ready && x <= 400) {
+					last_flick = now;
 					view = !view;
 					LOG_INF("stick flick left: panels show %s", view ? "the cluster" : "the zone lamps");
 				}
@@ -304,8 +329,9 @@ static void panel_thread(void *a, void *b, void *c)
 		double welcome = now - live_at < 800 ? (now - live_at) / 800.0
 			       : now - gone_at < 800 ? -(1.0 - (now - gone_at) / 800.0) : 2;
 
-		/* the stick's view, when one is heard, wins over this node's saved `panel mode` */
-		int sv = zone_panel_view();
+		/* the stick's view wins over this node's saved `panel mode`: the stick node uses its own (zenohd does not
+		 * echo a session's own puts back to it), the others what they hear */
+		int sv = have_stick ? view : zone_panel_view();
 		bool lamps = sv >= 0 ? sv == 0 : lamp_mode;
 
 		if (lamps) {

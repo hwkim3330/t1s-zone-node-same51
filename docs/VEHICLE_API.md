@@ -1,4 +1,4 @@
-# Vehicle API v1 — one key space for every component (proposal, 2026-10-28)
+# Vehicle API v1 — one key space for every component (2026-10-28; reviewed, baseline COVESA VSS v6.1)
 
 Today the bus speaks three dialects: `vehicle/<VSS path>` (the sidecar, the ESP zone controller), `vehicle/private/zone/…`
 (zone inputs, panel view, high beam) and `t1s/<board>/…` (node heartbeat, picture, commands). One signal can have two
@@ -6,6 +6,20 @@ publishers (the high beam: the sidecar always sends 0, the stick node sends its 
 housekeeping share a namespace, and there is no command API with a result. This is the one structure every component
 (zone nodes, ESP gateway, vehicle-API sidecar, console, HMI gateway, Autoware bridge) should speak instead, built on the
 signal catalogue that already exists (`elite-t1s-hat/firmware/catalog/*.yaml` + `zcgen.py`).
+
+## Review outcome (2026-10-28)
+
+An outside review agreed with the structure, with three points, all taken:
+1. **Keep requests and commands apart**: `…/target` is VSS actuator semantics (desired state, the owner decides and the
+   state key confirms), `vehicle/cmd/<name>` is an imperative call with a result. Not merged.
+2. **Authentication follows the network**, not one scheme for the whole car: on Ethernet / TSN segments zenohd ACLs per
+   key prefix plus TLS or mTLS on the links (MACsec where the switches have it); on a T1S segment, which is a closed
+   multidrop wire behind its gateway, the gateway is the enforcement point (it only bridges what its ACL allows onto
+   the segment) and nodes are trusted by position. Requests and commands from outside the vehicle always pass an
+   authenticated gateway (the HMI gateway's control token today).
+3. **Baseline = the current VSS release, v6.1 (2026-09-17)**, checked against its `vss.json` (1737 paths): every
+   standard key in use exists unchanged; the rear obstacle distance, DRL and parking lamps have standard paths (below);
+   the stick, driving mode, automated-driving marker and blink phase have none and stay in the overlay.
 
 ## Four planes, four roots
 
@@ -22,8 +36,9 @@ Rules:
    `vehicle/body/lights/beam/high/ison/target`; the sidecar stops sending a value it does not know.)
 2. **Standard VSS first.** A key is the lower-case VSS path without `Vehicle.`; only what VSS has no path for goes under
    the overlay `vehicle/private/<vss branch>/…`, named after *what it is*, not *who sends it*: the stick is
-   `vehicle/private/cabin/stick/{x,y}`, the rear obstacle distance `vehicle/private/body/obstacle/rear/distance` (m) —
-   not `private/zone/…` and not `private/external/…`. Which zone measured it is ECU-plane information.
+   `vehicle/private/cabin/stick/{x,y}` (VSS 6.1 has no input-device branch) — not `private/zone/…` and not
+   `private/external/…`; the rear obstacle distance has a standard path, so it uses it. Which zone measured a value is
+   ECU-plane information.
 3. **Types, units, rates, max age and the QoS class live in the catalogue only** (the five classes of the QoS mapper:
    Zenoh priority → PCP → TSN / PLCA). Every component's key table is generated from it (C header for the nodes,
    Python for the sidecar / console / bridges, the Wireshark table) — no hand-written key strings.
@@ -42,7 +57,9 @@ Rules:
 | `vehicle/private/zone/stick/{x,y}` | `vehicle/private/cabin/stick/{x,y}` | the zone that has the stick |
 | `vehicle/private/zone/stick/gearflick` | gone: the flick is a request, `…/selectedgear/target` | — |
 | `vehicle/private/zone/proximity/raw` | `ecu/<zone>/diag` (raw counts are diagnostics) | zone |
-| `vehicle/private/external/proximity_rear` | `vehicle/private/body/obstacle/rear/distance` | zone |
+| `vehicle/private/external/proximity_rear` | **`vehicle/adas/obstacledetection/rear/center/distance`** (VSS 6.1, float, m) + `…/rear/center/iswarning` (bool) | zone with the sensor |
+| (zone lamps, new) | **`vehicle/body/lights/running/ison`** (DRL), **`vehicle/body/lights/parking/ison`** (tail), `vehicle/body/lights/beam/low/ison` — VSS 6.1, published by the lamp zone as the state it shows | lamp zone |
+| (zone lamps, new) | `vehicle/private/body/lights/automateddriving/ison` (SAE J3134 marker; no VSS path) | lamp zone |
 | `vehicle/private/zone/body/isstatelost` | `ecu/<zone>/status` (`safe` flag) | zone |
 | `vehicle/private/zone/panel/view` | `ecu/all/config/display_view` | whoever sets it (the stick) |
 | `t1s/sam<id>/hello` / `t1s/<node>/hello` | `ecu/<zone>/status` | each ECU |

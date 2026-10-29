@@ -184,6 +184,44 @@ threading.Thread(target=scan, daemon=True).start()
 time.sleep(1)
 
 
+GATEWAY = os.environ.get('ZONE_GATEWAY_IP', '192.168.100.65')
+gw = {'ok': None, 'ms': None, 't': 0}
+
+
+def _ping_gateway():
+    # the ESP bridges the nodes' frames but sends few of its own: asked directly every 5 s
+    while True:
+        r = subprocess.run(['ping', '-c1', '-W1', GATEWAY], capture_output=True, text=True)
+        m = re.search(r'time=([0-9.]+)', r.stdout)
+        gw.update(ok=r.returncode == 0, ms=float(m.group(1)) if m else None, t=time.time())
+        time.sleep(5)
+
+
+def bus():
+    """who is on the bus, from the network: zone heartbeats over Zenoh (id, role, PLCA beacon, PTP) and the frames the
+    capture saw from each address. A board on USB only adds its console; a board on USB alone is not on the bus."""
+    z, seen = zone.state(), packets.talkers()
+    usb = {b.st['ip']: b.name for b in boards if b.st.get('ip')}
+    out = [{'kind': 'esp', 'name': 'ESP 게이트웨이', 'ip': GATEWAY, 'plca_id': 0, 'alive': bool(gw['ok']),
+            'ping_ms': gw['ms'], 'wire': seen.get(GATEWAY), 'usb': usb.get(GATEWAY)}]
+    ips = set()
+    for n in z['nodes']:
+        h = n.get('hello') or {}
+        ip = h.get('ip')
+        if not ip:
+            continue
+        ips.add(ip)
+        w = seen.get(ip)
+        out.append({'kind': 'sam', 'name': h.get('role') or f"sam{n['id']}", 'id': n['id'], 'plca_id': n['id'], 'ip': ip,
+                    'alive': n['hello_age'] < 5, 'hb_age': n['hello_age'], 'pst': h.get('pst'), 'ptp_ns': h.get('ptp_ns'),
+                    'api': h.get('api'), 'wire': w, 'mac': w and w['mac'], 'usb': usb.get(ip)})
+    for ip, w in seen.items():          # talking on the wire without a heartbeat (old firmware, no Zenoh yet)
+        if ip not in ips and ip != GATEWAY:
+            out.append({'kind': 'sam', 'name': packets.name(ip), 'plca_id': None, 'ip': ip, 'alive': w['age'] < 15,
+                        'wire': w, 'mac': w['mac'], 'usb': usb.get(ip), 'no_hb': True})
+    return {'nodes': out, 'capture': packets.status, 'usb_only': [b.name for b in boards if b.kind == 'sam' and b.st.get('ip') not in ips]}
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *x):
         pass
@@ -198,6 +236,8 @@ class H(BaseHTTPRequestHandler):
             return self.reply(200, open(os.path.join(HERE, 'index.html'), 'rb').read(), 'text/html; charset=utf-8')
         if self.path == '/api/zone':
             return self.reply(200, zone.state())
+        if self.path == '/api/bus':
+            return self.reply(200, bus())
         if self.path.startswith('/icon.png'):
             p = os.path.join(HERE, 'icon.png')
             if os.path.exists(p):
@@ -258,6 +298,7 @@ class H(BaseHTTPRequestHandler):
 
 zone.start()
 packets.start()
+threading.Thread(target=_ping_gateway, daemon=True).start()
 print(f'{len(boards)} boards:', ', '.join(f'{b.name} ({os.path.realpath(b.path)})' for b in boards))
 print(f'http://localhost:{a.port}')
 ThreadingHTTPServer(('0.0.0.0', a.port), H).serve_forever()

@@ -100,25 +100,28 @@ pre.job{height:auto;max-height:220px}
 </main>
 <script>
 const $ = s => document.querySelector(s);
-let S = [], planned = 2;
+let S = [], B = null, planned = 2;
 const col = b => (Date.now()/1000 - b.seen > 12) ? 'var(--bad)' : (b.pst ? 'var(--ok)' : (b.link ? 'var(--warn)' : 'var(--bad)'));
 const esc = s => String(s ?? '—').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
 function topo() {
-  // ESP in the middle of the bus (the coordinator and gateway), SAM nodes on both sides;
+  // who is on the bus as the network sees it (/api/bus): the zone heartbeats over Zenoh and the frames the capture
+  // saw from each address -- not the USB cables. ESP in the middle (coordinator, gateway), SAM nodes on both sides;
   // only the two outermost nodes are terminated.
-  const esp = S.filter(b => b.kind === 'esp'), sam = S.filter(b => b.kind === 'sam')
-    .sort((a, b) => (a.plca_id ?? 99) - (b.plca_id ?? 99));
+  const nodesB = (B && B.nodes) || [], e = nodesB.find(b => b.kind === 'esp');
+  const sam = nodesB.filter(b => b.kind === 'sam').sort((a, b) => (a.plca_id ?? 99) - (b.plca_id ?? 99));
   const nodes = [...sam, ...Array(Math.max(0, 4 - sam.length)).fill(null)];
   const half = Math.ceil(nodes.length / 2), left = nodes.slice(0, half), right = nodes.slice(half);
   const W = 1200, cx0 = W / 2, busY = 250, x0 = 40, x1 = W - 40;
-  const e = esp[0], lanUp = e && e.lan && e.lan.startsWith('up');
+  const cap = B && B.capture && B.capture.running, lanUp = cap || (e && e.alive);
+  const bcol = b => !b.alive ? 'var(--bad)' : (b.kind === 'esp' || b.pst ? 'var(--ok)' : 'var(--warn)');
+  const ago = w => w ? (w.age < 1 ? '지금' : `${w.age}초 전`) : '—';
   let g = '';
-  g += box(cx0 - 110, 10, 220, 62, 'PC / 스위치', '192.168.100.51 (USB LAN)', lanUp ? 'var(--ok)' : 'var(--mute)', !lanUp);
+  g += box(cx0 - 110, 10, 220, 62, 'PC / 스위치', `192.168.100.51 (${esc(B && B.capture && B.capture.iface)})`, lanUp ? 'var(--ok)' : 'var(--mute)', !lanUp);
   g += `<line x1="${cx0}" y1="72" x2="${cx0}" y2="110" stroke="var(--mute)" stroke-width="2" ${lanUp ? '' : 'stroke-dasharray="6 5"'}/>`;
-  g += `<text x="${cx0 + 10}" y="96" font-size="12" class="mute">100BASE-TX · ${lanUp ? '링크 업' : 'LAN 미연결'}${e?.mode === 'bridge' ? ' · 브리지 ↓ ' + esc(e.br_down) + ' · ↑ ' + esc(e.br_up) : ''}</text>`;
-  if (e) g += box(cx0 - 110, 110, 220, 92, e.name, `PLCA ${e.plca_id}/${e.plca_count} ${e.plca_id === 0 ? '코디네이터' : ''}`, col(e), false, e.mode === 'bridge' ? '브리지 모드 · IP 없음' : `${esc(e.ip)} · 게이트웨이 · PTP 마스터`, '버스 중앙 · 종단 OFF');
-  else g += box(cx0 - 110, 110, 220, 92, 'ESP 게이트웨이', '연결 안 됨', 'var(--bad)', true);
+  g += `<text x="${cx0 + 10}" y="96" font-size="12" class="mute">100BASE-TX · ${cap ? '패킷 캡처 중' : '캡처 없음'}</text>`;
+  if (e) g += box(cx0 - 110, 110, 220, 92, e.name, `PLCA 0 · 코디네이터`, bcol(e), !e.alive,
+    `${esc(e.ip)} · ${e.alive ? 'ping ' + (e.ping_ms ?? '?') + ' ms' : '응답 없음'}`, `프레임 ${ago(e.wire)}${e.usb ? ' · USB' : ''}`);
   g += `<line x1="${x0 + 60}" y1="${busY}" x2="${x1 - 60}" y2="${busY}" stroke="var(--bus)" stroke-width="5"/>`;
   g += `<line x1="${cx0}" y1="202" x2="${cx0}" y2="${busY}" stroke="var(--bus)" stroke-width="5"/>`;
   g += `<text x="${x0 + 70}" y="${busY - 12}" font-size="13" class="mute">10BASE-T1S 2선 버스 · 10 Mb/s 공유 · PLCA</text>`;
@@ -126,9 +129,11 @@ function topo() {
   const place = (list, xa, xb) => list.forEach((b, i) => {
     const cx = list.length > 1 ? xa + i * (xb - xa) / (list.length - 1) : (xa + xb) / 2;
     g += `<line x1="${cx}" y1="${busY}" x2="${cx}" y2="${busY + 40}" stroke="var(--bus)" stroke-width="3" ${b ? '' : 'stroke-dasharray="5 4"'}/>`;
-    const ptp = b && b.ptp_ns != null && Date.now() / 1000 - b.ptp_at < 30 ? ` · PTP ${b.ptp_ns > 0 ? '+' : ''}${b.ptp_ns} ns` : '';
-    if (b) g += box(cx - 95, busY + 40, 190, 92, b.name, `PLCA ${b.plca_id ?? '?'} / ${b.plca_count ?? '?'}`, col(b), false, esc(b.ip) + ptp, b.mac ? b.mac : '');
-    else g += box(cx - 95, busY + 40, 190, 92, 'SAM E51 (예정)', 'LAN8651 클릭', 'var(--mute)', true);
+    if (!b) { g += box(cx - 95, busY + 40, 190, 92, '빈 자리', 'PLCA 슬롯', 'var(--mute)', true); return; }
+    const ptp = b.ptp_ns != null && b.alive ? ` · PTP ${b.ptp_ns > 0 ? '+' : ''}${b.ptp_ns} ns` : '';
+    const src = b.no_hb ? `프레임 ${ago(b.wire)} · 하트비트 없음` : `하트비트 ${b.hb_age}초 전 · 프레임 ${ago(b.wire)}`;
+    g += box(cx - 95, busY + 40, 190, 92, b.name, `PLCA ${b.plca_id ?? '?'}${b.pst ? ' · 비컨 들림' : ''}${b.usb ? ' · USB' : ''}`, bcol(b), !b.alive,
+      esc(b.ip) + ptp, src);
   });
   place(left, x0 + 120, cx0 - 140);
   place(right, cx0 + 140, x1 - 120);
@@ -198,7 +203,9 @@ $('#pingall').onclick = async () => {
 async function tick() {
   try {
     S = await (await fetch('/api/state')).json();
-    $('#sub').textContent = `${S.length}개 보드 · ${new Date().toLocaleTimeString()}`;
+    try { B = await (await fetch('/api/bus')).json(); } catch (e) { B = null; }
+    const onBus = B ? B.nodes.filter(b => b.kind === 'sam' && b.alive).length : 0;
+    $('#sub').textContent = `버스 노드 ${onBus}개 (네트워크 기준) · USB ${S.length}개${B && B.usb_only.length ? ' (버스에 없음: ' + B.usb_only.join(', ') + ')' : ''} · ${new Date().toLocaleTimeString()}`;
     topo(); cards();
   } catch (e) { $('#sub').textContent = '서버 연결 끊김'; }
 }

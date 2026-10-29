@@ -16,14 +16,31 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import zenoh_decode  # noqa: E402
 
-IFACE = os.environ.get('ZONE_IFACE', 'enxc84d442001a1')
 PC = os.environ.get('ZONE_PC_IP', '192.168.100.51')
+
+
+def _iface():
+    # the port that holds the bench address: a USB NIC once, now the port behind the D10 switches, which also carries
+    # the Autoware PC's link (hence the capture filter below)
+    try:
+        for l in subprocess.run(['ip', '-o', '-4', 'addr'], capture_output=True, text=True).stdout.splitlines():
+            if f' {PC}/' in l:
+                return l.split()[1]
+    except OSError:
+        pass
+    return 'enxc84d442001a1'
+
+
+IFACE = os.environ.get('ZONE_IFACE') or _iface()
+# only the bus subnet: the same port carries the Autoware PC's DDS/CARLA traffic (hundreds of Mbit/s)
+FILTER = os.environ.get('ZONE_FILTER', 'net 192.168.100.0/24 or arp')
 T0 = time.time()
 log = collections.deque(maxlen=6000)        # (t, proto, src, dst, bytes, info, dir)
 recent = collections.deque()                 # (time, proto, src, dst, bytes) of the last WINDOW s
 WINDOW = 10.0
 lock = threading.Lock()
 status = {'running': False, 'error': None, 'frames': 0, 'iface': IFACE}
+seen = {}                                    # source IP on the bus subnet -> {t, frames, bytes, mac, protos}
 names = {PC: 'PC (zenohd)', '192.168.100.65': 'ESP gateway', '192.168.100.73': 'sam3', '192.168.100.74': 'sam4'}
 
 
@@ -89,7 +106,7 @@ def classify(f):
 def _run():
     while True:
         try:
-            pr = subprocess.Popen(['dumpcap', '-q', '-P', '-i', IFACE, '-w', '-'], stdout=subprocess.PIPE,
+            pr = subprocess.Popen(['dumpcap', '-q', '-P', '-i', IFACE, '-f', FILTER, '-w', '-'], stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE)
             r = pr.stdout
             hdr = r.read(24)
@@ -114,6 +131,10 @@ def _run():
                     status['frames'] += 1
                     log.append((round(t - T0, 3), proto, s, d, orig, info[:400], dr))
                     recent.append((t, proto, s, d, orig))
+                    if s.startswith('192.168.100.') and s != PC:
+                        e = seen.setdefault(s, {'frames': 0, 'bytes': 0, 'protos': set()})
+                        e['t'] = t; e['frames'] += 1; e['bytes'] += orig; e['protos'].add(proto)
+                        e['mac'] = ':'.join('%02x' % x for x in f[6:12])
                     while recent and recent[0][0] < t - WINDOW:
                         recent.popleft()
         except Exception as e:
@@ -123,6 +144,14 @@ def _run():
 
 def start():
     threading.Thread(target=_run, daemon=True).start()
+
+
+def talkers():
+    """every address that sent a frame through the gateway: the bus as the wire sees it (no USB needed)"""
+    now = time.time()
+    with lock:
+        return {ip: {'age': round(now - e['t'], 1), 'frames': e['frames'], 'bytes': e['bytes'], 'mac': e['mac'],
+                     'protos': sorted(e['protos'])} for ip, e in seen.items()}
 
 
 def rates():

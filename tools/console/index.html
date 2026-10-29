@@ -132,7 +132,7 @@ function topo() {
     if (!b) { g += box(cx - 95, busY + 40, 190, 92, '빈 자리', 'PLCA 슬롯', 'var(--mute)', true); return; }
     const ptp = b.ptp_ns != null && b.alive ? ` · PTP ${b.ptp_ns > 0 ? '+' : ''}${b.ptp_ns} ns` : '';
     const src = b.no_hb ? `프레임 ${ago(b.wire)} · 하트비트 없음` : `하트비트 ${b.hb_age}초 전 · 프레임 ${ago(b.wire)}`;
-    g += box(cx - 95, busY + 40, 190, 92, b.name, `PLCA ${b.plca_id ?? '?'}${b.pst ? ' · 비컨 들림' : ''}${b.usb ? ' · USB' : ''}`, bcol(b), !b.alive,
+    g += box(cx - 95, busY + 40, 190, 92, b.name + (b.fw ? ' · ' + b.fw.replace(/\+0$/, '') : ''), `PLCA ${b.plca_id ?? '?'}${b.pst ? ' · 비컨 들림' : ''}${b.usb ? ' · USB' : ''}`, bcol(b), !b.alive,
       esc(b.ip) + ptp, src);
   });
   place(left, x0 + 120, cx0 - 140);
@@ -290,7 +290,7 @@ async function zoneTick() {
     const c = zoneCard(n), h = n.hello || {};
     const live = n.hello_age < 5;
     c.querySelector('.dot').style.background = !live ? 'var(--bad)' : h.ptp_ns == null ? 'var(--warn)' : 'var(--ok)';
-    c.querySelector('.t').textContent = `${h.role ?? "존 노드"} (sam${n.id}) · ${h.ip ?? "?"} · 가동 ${h.up ?? "?"} s${h.api ? " · API " + h.api : " · 옛 키"}`;
+    c.querySelector('.t').textContent = `${h.role ?? "존 노드"} (sam${n.id}) · ${h.ip ?? "?"} · 가동 ${h.up ?? "?"} s${h.fw ? " · fw " + h.fw : ""}${h.api ? " · API " + h.api : " · 옛 키"}`;
     drawPanel(c.querySelector('canvas'), n.panel);
     spark(c.querySelector('.spark'), n.ptp_hist);
     c.querySelector('.ptpv').textContent = h.ptp_ns == null ? '잠금 안 됨' : `지금 ${h.ptp_ns} ns · σ ${n.ptp_sd ?? '—'} ns (최근 2 분)`;

@@ -214,7 +214,7 @@ def bus():
         w = seen.get(ip)
         out.append({'kind': 'sam', 'name': h.get('role') or f"sam{n['id']}", 'id': n['id'], 'plca_id': n['id'], 'ip': ip,
                     'alive': n['hello_age'] < 5, 'hb_age': n['hello_age'], 'pst': h.get('pst'), 'ptp_ns': h.get('ptp_ns'),
-                    'api': h.get('api'), 'wire': w, 'mac': w and w['mac'], 'usb': usb.get(ip)})
+                    'api': h.get('api'), 'fw': h.get('fw'), 'wire': w, 'mac': w and w['mac'], 'usb': usb.get(ip)})
     for ip, w in seen.items():          # talking on the wire without a heartbeat (old firmware, no Zenoh yet)
         if ip not in ips and ip != GATEWAY:
             out.append({'kind': 'sam', 'name': packets.name(ip), 'plca_id': None, 'ip': ip, 'alive': w['age'] < 15,

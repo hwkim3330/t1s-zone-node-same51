@@ -97,6 +97,13 @@ static int zz_set(const char *key, size_t len, settings_read_cb read, void *arg)
 }
 SETTINGS_STATIC_HANDLER_DEFINE(zz, "zenoh", NULL, zz_set, NULL, NULL);
 
+/* the signed image's version, in the heartbeat: what an update put on the node, without asking over SMP */
+#ifdef CONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION
+#define FW_VERSION CONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION
+#else
+#define FW_VERSION "dev"
+#endif
+
 static void ack_wait(const char *msg, k_timeout_t wait);
 #define ack(msg) ack_wait((msg), K_MSEC(10))
 
@@ -202,7 +209,7 @@ static void on_vehicle(z_loaned_sample_t *sample, void *arg)
 
 static void zenoh_thread(void *a, void *b, void *c)
 {
-	char ke[64], msg[160];
+	char ke[64], msg[208];   /* the heartbeat JSON (~140 B with fw) */
 
 	while (!zone_bus_up()) {
 		k_msleep(500);
@@ -306,8 +313,8 @@ static void zenoh_thread(void *a, void *b, void *c)
 			}
 			snprintf(msg, sizeof(msg),
 				 "{\"id\":%u,\"ip\":\"%s\",\"up\":%u,\"pst\":%d,\"cmds\":%u,\"ptp_ns\":%s,\"rst\":%u,"
-				 "\"role\":\"%s\",\"api\":\"%s\"}", id, ip, (unsigned)(k_uptime_get() / 1000), zone_bus_up(),
-				 n_cmd, ptp, zone_reset_cause, zone_role(), VAPI_HASH);
+				 "\"role\":\"%s\",\"api\":\"%s\",\"fw\":\"%s\"}", id, ip, (unsigned)(k_uptime_get() / 1000),
+				 zone_bus_up(), n_cmd, ptp, zone_reset_cause, zone_role(), VAPI_HASH, FW_VERSION);
 			/*
 			 * A put that fails is not a lost session: with the transmit lock busy (the panel thread's
 			 * sensors, an ack) zenoh-pico drops the message and returns EBUSY ("System error: 16").

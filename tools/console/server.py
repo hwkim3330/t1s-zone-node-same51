@@ -185,7 +185,7 @@ time.sleep(1)
 
 
 GATEWAY = os.environ.get('ZONE_GATEWAY_IP', '192.168.100.65')
-gw = {'ok': None, 'ms': None, 't': 0}
+gw = {'ok': None, 'ms': None, 't': 0, 'last_ok': 0, 'hist': []}
 
 
 def _ping_gateway():
@@ -193,7 +193,11 @@ def _ping_gateway():
     while True:
         r = subprocess.run(['ping', '-c1', '-W1', GATEWAY], capture_output=True, text=True)
         m = re.search(r'time=([0-9.]+)', r.stdout)
-        gw.update(ok=r.returncode == 0, ms=float(m.group(1)) if m else None, t=time.time())
+        ok = r.returncode == 0
+        gw.update(ok=ok, ms=float(m.group(1)) if m else gw['ms'], t=time.time())
+        if ok:
+            gw['last_ok'] = time.time()
+        gw['hist'] = (gw['hist'] + [ok])[-24:]          # the last 2 minutes
         time.sleep(5)
 
 
@@ -202,8 +206,12 @@ def bus():
     capture saw from each address. A board on USB only adds its console; a board on USB alone is not on the bus."""
     z, seen = zone.state(), packets.talkers()
     usb = {b.st['ip']: b.name for b in boards if b.st.get('ip')}
-    out = [{'kind': 'esp', 'name': 'ESP 게이트웨이', 'ip': GATEWAY, 'plca_id': 0, 'alive': bool(gw['ok']),
-            'ping_ms': gw['ms'], 'wire': seen.get(GATEWAY), 'usb': usb.get(GATEWAY)}]
+    # the ESP answers ~1 ping in 10 late while it bridges the bus (2/20 lost, 2026-10-29) and the nodes' traffic goes
+    # on: red only after 20 s without an answer, the loss shown apart
+    h = gw['hist']
+    out = [{'kind': 'esp', 'name': 'ESP 게이트웨이', 'ip': GATEWAY, 'plca_id': 0, 'alive': time.time() - gw['last_ok'] < 20,
+            'ping_ms': gw['ms'], 'ping_loss': round(100 * h.count(False) / len(h)) if h else None,
+            'wire': seen.get(GATEWAY), 'usb': usb.get(GATEWAY)}]
     ips = set()
     for n in z['nodes']:
         h = n.get('hello') or {}

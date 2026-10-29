@@ -185,6 +185,9 @@ time.sleep(1)
 
 
 GATEWAY = os.environ.get('ZONE_GATEWAY_IP', '192.168.100.65')
+# on the same subnet but not on the T1S bus: the two D10 switches between the PCs (KETI1 .1, KETI2 .2) and the older
+# switch addresses (.4); the capture sees their management frames
+NOT_NODES = set(os.environ.get('ZONE_NOT_NODES', '192.168.100.1,192.168.100.2,192.168.100.4').split(','))
 gw = {'ok': None, 'ms': None, 't': 0, 'last_ok': 0, 'hist': []}
 
 
@@ -224,7 +227,7 @@ def bus():
                     'alive': n['hello_age'] < 5, 'hb_age': n['hello_age'], 'pst': h.get('pst'), 'ptp_ns': h.get('ptp_ns'),
                     'api': h.get('api'), 'fw': h.get('fw'), 'wire': w, 'mac': w and w['mac'], 'usb': usb.get(ip)})
     for ip, w in seen.items():          # talking on the wire without a heartbeat (old firmware, no Zenoh yet)
-        if ip not in ips and ip != GATEWAY:
+        if ip not in ips and ip != GATEWAY and ip not in NOT_NODES:
             out.append({'kind': 'sam', 'name': packets.name(ip), 'plca_id': None, 'ip': ip, 'alive': w['age'] < 15,
                         'wire': w, 'mac': w['mac'], 'usb': usb.get(ip), 'no_hb': True})
     return {'nodes': out, 'capture': packets.status, 'usb_only': [b.name for b in boards if b.kind == 'sam' and b.st.get('ip') not in ips]}

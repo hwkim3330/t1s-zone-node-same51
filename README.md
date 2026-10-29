@@ -210,6 +210,8 @@ mikroBUS socket 2 and 3"). 슬롯 1 은 UART 만 슬롯 3 과 같고(T1S 클릭�
 
 ## 네트워크 펌웨어 업데이트 (MCUboot + mcumgr SMP/UDP)
 
+Zephyr·Zenoh·OTA 가 각각 무엇이고 업계 OTA(Uptane·A/B·R156)와 비교해 어디까지 했는지는 `docs/ZEPHYR_ZENOH_OTA.md`.
+
 보드마다 **USB 로 한 번만** MCUboot + 앱을 굽고, 그 뒤로는 T1S 너머로 올린다(USB 불필요):
 
 ```

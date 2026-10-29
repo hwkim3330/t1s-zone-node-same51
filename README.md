@@ -229,6 +229,10 @@ tools/smp_udp.py 192.168.100.73 list
 스스로 이미지를 확정한다 → 부팅 못 하는 이미지는 다음 리셋에 MCUboot 가 되돌린다. 서명 키는 MCUboot 개발 키(벤치용).
 파티션: boot 64K · slot0/slot1 472K · storage 16K (`same51_cnano.dts`). 버전을 안 올리면 같은 해시라 스왑이 안 일어난다.
 
+**2026-10-29 세 번째 보드(…486, MAC FC:C2:3D:3A:0C:D2) = id 5 / 192.168.100.75**: USB 로 MCUboot+v0.13.9 를 굽고 MAC 표로 신원 확인
+(클릭은 슬롯 1, 아직 버스 미연결). 같은 v0.13.9 를 3·4번에 `smp_udp.py 192.168.100.73,192.168.100.74 update` 로 올림: 293 KB 5.8 s/대
+(404 kbit/s), 두 대 27 s, 둘 다 slot0 v0.13.9 active confirmed · slot1 v0.13.8(롤백용).
+
 ## Zenoh (zenoh-pico 1.10.1 클라이언트)
 
 노드는 PC 의 zenohd 에 TCP 클라이언트로 붙는다(ESP 브리지 경유). 라우터는 Kconfig `APP_ZENOH_LOCATOR`(기본 `tcp/192.168.100.51:7448`)

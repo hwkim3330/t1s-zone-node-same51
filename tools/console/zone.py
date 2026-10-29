@@ -53,6 +53,8 @@ def _on_hello(m):
         h = json.loads(m.payload.to_string())
     except ValueError:
         return
+    if h.get('id') is None:          # ecu/ads/status (the ADS heartbeat) matches ecu/*/status too: not a zone node
+        return
     with lock:
         n = _node(h.get('id'))
         n['hello'], n['hello_at'] = h, time.time()

@@ -237,9 +237,9 @@ function zoneCard(n) {
 const zst = {};   // per node: map index while matching
 async function zoneAct(id, a) {
   if (!a) return;
-  const n = Z.nodes.find(x => x.id === id), b = n && n.hello && boardFor(n.hello.ip), c = document.getElementById('z' + id);
-  if (!b) return;
-  const run = async (cmd, wait = 1.5) => (await (await fetch('/api/cmd', {method: 'POST', body: JSON.stringify({i: b.i, cmd, wait})})).json()).out.join('\n');
+  const c = document.getElementById('z' + id);
+  // over the bus (Zenoh "sh <cmd>" on the node, firmware >= 0.13.10): no USB cable needed
+  const run = async (cmd, wait = 5) => (await (await fetch('/api/zone/sh', {method: 'POST', body: JSON.stringify({id, cmd, wait})})).json()).out.join('\n');
   const show = (txt) => { const o = c.querySelector('.out'); o.style.display = ''; o.textContent = txt; };
   const vis = (on) => { for (const k of ['next', 'ok', 'cancel']) c.querySelector(`[data-a=${k}]`).hidden = !on;
                         c.querySelector('[data-a=pattern]').hidden = on; };

@@ -38,6 +38,8 @@ sensors = {'stick_x': None, 'stick_y': None, 'prox_raw': None, 'prox_m': None, '
 jobs = {'update': None, 'qos': None}
 lock = threading.Lock()
 roles = {}                   # role -> node id (from the heartbeats)
+session = [None]            # the Zenoh session (sh() puts on it)
+replies = {}                 # role -> [threading.Event, reply]: an "sh <cmd>" waiting for its cmd/ack
 ads = {'hb': None, 'at': 0}  # ecu/ads/status: the ADS heartbeat (the sidecar publishes it, 1 Hz)
 STICK_X, STICK_Y = 'vehicle/private/cabin/stick/x', 'vehicle/private/cabin/stick/y'
 PROX_M = 'vehicle/adas/obstacledetection/rear/center/distance'
@@ -117,6 +119,29 @@ def _on_vehicle(m):
         car['_at'] = time.time()
 
 
+def _on_ack(m):
+    t = m.payload.to_string()
+    role = str(m.key_expr).split('/')[1]
+    if t.startswith('sh:') and role in replies:
+        replies[role][1] = t[3:]
+        replies[role][0].set()
+
+
+def sh(node_id, cmd, wait=5.0):
+    """a console command on a node over the bus (firmware >= 0.13.10: "sh <cmd>" on ecu/<role>/cmd, answered on
+    cmd/ack) -> its output lines, or None (no session, unknown node, no answer)"""
+    with lock:
+        role = next((r for r, i in roles.items() if i == node_id), None)
+    if not role or session[0] is None:
+        return None
+    ev = threading.Event()
+    replies[role] = [ev, None]
+    session[0].put(f'ecu/{role}/cmd', 'sh ' + cmd)
+    ok = ev.wait(wait)
+    r = replies.pop(role, [None, None])[1]
+    return r.strip('\r\n').splitlines() if ok and r is not None else None
+
+
 def start():
     if zenoh is None:
         return
@@ -127,6 +152,8 @@ def start():
                 c.insert_json5('mode', '"client"')
                 c.insert_json5('connect/endpoints', json.dumps([ROUTER]))
                 s = zenoh.open(c)
+                session[0] = s
+                s.declare_subscriber('ecu/*/cmd/ack', _on_ack)
                 for k in ('ecu/*/status', 't1s/*/hello'):
                     s.declare_subscriber(k, _on_hello)
                 for k in ('ecu/*/display', 't1s/*/panel'):

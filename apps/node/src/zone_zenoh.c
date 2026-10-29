@@ -16,6 +16,7 @@
 #include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
+#include <zephyr/shell/shell_dummy.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/logging/log.h>
 #include <zenoh-pico.h>
@@ -96,11 +97,14 @@ static int zz_set(const char *key, size_t len, settings_read_cb read, void *arg)
 }
 SETTINGS_STATIC_HANDLER_DEFINE(zz, "zenoh", NULL, zz_set, NULL, NULL);
 
-static void ack(const char *msg)
+static void ack_wait(const char *msg, k_timeout_t wait);
+#define ack(msg) ack_wait((msg), K_MSEC(10))
+
+static void ack_wait(const char *msg, k_timeout_t wait)
 {
-	/* runs in zenoh's read task: wait for pub_lock only briefly (the teardown holds it while it stops this task,
+	/* from zenoh's read task: wait for pub_lock only briefly (the teardown holds it while it stops this task,
 	 * so an unbounded wait could deadlock; K_NO_WAIT lost ~10 % of the acks to the 20 Hz sensor sends) */
-	if (!ack_ok || k_mutex_lock(&pub_lock, K_MSEC(10))) {
+	if (!ack_ok || k_mutex_lock(&pub_lock, wait)) {
 		return;
 	}
 	if (ack_ok) {
@@ -114,10 +118,38 @@ static void ack(const char *msg)
 	k_mutex_unlock(&pub_lock);
 }
 
+/*
+ * "sh <command>" on ecu/<role>/cmd: the node's own console over the bus. Runs on the dummy shell backend in its own
+ * thread (`t1s wake` takes seconds; the zenoh read task must not wait on it) and answers "sh:<output>" on cmd/ack --
+ * what the console's node buttons (sleep, wake, diag, LED map) used the USB cable for. One at a time; bench only.
+ */
+static char sh_cmd[96];
+static char sh_out[CONFIG_SHELL_BACKEND_DUMMY_BUF_SIZE + 4];
+static atomic_t sh_busy;
+K_SEM_DEFINE(sh_sem, 0, 1);
+
+static void sh_thread(void *a, void *b, void *c)
+{
+	for (;;) {
+		k_sem_take(&sh_sem, K_FOREVER);
+		const struct shell *sh = shell_backend_dummy_get_ptr();
+		size_t n = 0;
+
+		shell_backend_dummy_clear_output(sh);
+		int rc = shell_execute_cmd(sh, sh_cmd);
+		const char *o = shell_backend_dummy_get_output(sh, &n);
+
+		snprintf(sh_out, sizeof(sh_out), "sh:%s%.*s", rc ? "(error) " : "", (int)MIN(n, sizeof(sh_out) - 12), o);
+		ack_wait(sh_out, K_MSEC(500));   /* its own thread: it may wait for the sensor sends */
+		atomic_clear(&sh_busy);
+	}
+}
+K_THREAD_DEFINE(zone_sh, 3072, sh_thread, NULL, NULL, NULL, 10, 0, 0);
+
 static void on_cmd(z_loaned_sample_t *sample, void *arg)
 {
 	z_owned_string_t s;
-	char cmd[48] = {0};
+	char cmd[sizeof(sh_cmd) + 4] = {0};
 
 	z_bytes_to_string(z_sample_payload(sample), &s);
 	size_t n = MIN(z_string_len(z_string_loan(&s)), sizeof(cmd) - 1);
@@ -137,6 +169,13 @@ static void on_cmd(z_loaned_sample_t *sample, void *arg)
 		ack(cmd);
 	} else if (!strcmp(cmd, "ping")) {
 		ack("pong");
+	} else if (!strncmp(cmd, "sh ", 3)) {
+		if (!atomic_cas(&sh_busy, 0, 1)) {
+			ack("sh:(busy)");
+			return;
+		}
+		strncpy(sh_cmd, cmd + 3, sizeof(sh_cmd) - 1);
+		k_sem_give(&sh_sem);
 	} else {
 		LOG_WRN("cmd '%s' not understood", cmd);
 		ack("unknown");

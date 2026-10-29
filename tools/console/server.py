@@ -270,6 +270,9 @@ class H(BaseHTTPRequestHandler):
             b = boards[int(q['i'])]
             cmd = str(q['cmd'])[:120].replace('\r', '').replace('\n', '')
             return self.reply(200, {'out': b.run(cmd, float(q.get('wait', 1.5)))})
+        if self.path == '/api/zone/sh':           # {id, cmd, wait}: a node's console over the bus, no USB
+            out = zone.sh(int(q['id']), str(q['cmd'])[:90].replace('\n', ' '), float(q.get('wait', 5)))
+            return self.reply(200, {'out': out if out is not None else ['(응답 없음: 노드가 버스에 없거나 0.13.10 이전 펌웨어)']})
         if self.path == '/api/wireshark':
             return self.reply(200, {'ok': packets.wireshark()})
         if self.path == '/api/zone/update':

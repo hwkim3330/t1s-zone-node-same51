@@ -43,4 +43,92 @@ config APP_PTP_MASTER
 	  The ESP gateway (`mode node` + `gw on`) answers the UDP 5007 exchange with hardware stamps.
 	  The lock runs for ever: re-locked after a lost master, offset in t1s/sam<id>/hello.
 
+config APP_ROLE
+	string "Vehicle-zone role when neither a saved role nor the MAC table names one (empty = from the PLCA id)"
+	default ""
+	help
+	  The role is the ECU name on the Vehicle API (ecu/<role>/...): zone-left, zone-right, zone-rear, ...
+	  Order at boot: saved (`zone role <name>`) > the MAC table in main.c > this > the PLCA id's parity
+	  (odd zone-left, even zone-right: the two-node bench's old rule).
+
+menu "Remote access (bus shell, firmware update)"
+
+config APP_BUS_SHELL
+	bool "Console over the bus: \"ash\"/\"sh\" commands on ecu/<role>/cmd run on the dummy shell"
+	default y
+	depends on APP_ZENOH && SHELL_BACKEND_DUMMY
+	help
+	  Off for a release build (apps/node/release.conf): the node then answers every shell request with
+	  "sh:(disabled)".
+
+config APP_BUS_SHELL_AUTH
+	bool "Bus shell commands must carry an HMAC-SHA256 tag (ash <ctr> <tag> <cmd>)"
+	default y
+	depends on APP_BUS_SHELL
+	select TINYCRYPT
+	select TINYCRYPT_SHA256
+	select TINYCRYPT_SHA256_HMAC
+	help
+	  tag = first 16 bytes (hex) of HMAC-SHA256(key, "<bn>|<id>|<ctr>|<cmd>"), bn = the node's per-boot nonce
+	  (in its heartbeat), id = its PLCA id, ctr = a decimal counter that must grow (the PC's time in ms).
+	  The key is a build-time secret: the file BUS_KEY_FILE (default ~/.config/t1s-keys/bus.key, 64 hex digits),
+	  never in the repository. A build without the file refuses every command (fail closed).
+	  n = the old unauthenticated "sh <cmd>" (bench only).
+
+config APP_BUS_SHELL_ALLOW
+	string "Commands the bus shell may run (';' list; an entry matches the command or its prefix + ' ', '$' = exact)"
+	default "t1s status;t1s diag;t1s sleep;t1s wake;panel;ptp$;zenoh$;zone;ota;irqlat;kernel uptime$;kernel stacks$;kernel thread stacks$;net iface$;net ping"
+	depends on APP_BUS_SHELL
+	help
+	  Not on the list by default: register writes (t1s reg), identity changes (t1s plca/ip/save/forget),
+	  the router (zenoh <locator>), PTP master changes (ptp lock), reboot (SMP has its own).
+
+config APP_SMP_FILTER
+	bool "Filter mcumgr SMP/UDP (port 1337) in the IPv4 input: source address and arming"
+	default y
+	depends on MCUMGR_TRANSPORT_UDP
+	select NET_PKT_FILTER
+	select NET_PKT_FILTER_IPV4_HOOK
+
+config APP_SMP_ALLOWED_SRC
+	string "The only IPv4 source SMP is taken from (empty = any)"
+	default "192.168.100.51"
+	depends on APP_SMP_FILTER
+
+config APP_SMP_ARM
+	bool "SMP is closed until armed (`ota arm [s]`, through the authenticated bus shell or the USB console)"
+	default y
+	depends on APP_SMP_FILTER
+
+config APP_SMP_ARM_S
+	int "Default arming window, seconds"
+	default 300
+	depends on APP_SMP_ARM
+
+config APP_CONFIRM_TIMEOUT_S
+	int "A test-booted image confirms itself only after a health check; not healthy after this many seconds = reboot unconfirmed (MCUboot reverts)"
+	default 180
+	help
+	  Healthy = PLCA beacons heard, Zenoh connected and the first heartbeat put out (and, with
+	  APP_CONFIRM_NEED_VEHICLE, one vehicle key received).
+
+config APP_CONFIRM_NEED_SMP
+	bool "The health check also waits for an SMP request taken through the filter: the image must be updatable again"
+	default y
+	depends on APP_SMP_FILTER
+	help
+	  tools/smp_udp.py update arms the node (authenticated bus command) and lists its slots after the reset, which is
+	  that request. An image whose bus shell key, arming or SMP filter does not work is therefore never confirmed and
+	  goes back by itself -- instead of staying on a node that could then only be reached over SWD.
+
+config APP_CONFIRM_NEED_VEHICLE
+	bool "The health check also waits for a vehicle key (the car must be running during an update)"
+	default n
+
+endmenu
+
+config APP_IRQ_PROBE
+	bool "IRQ latency probe: TC4 interrupt every 8 ms at the EIC's priority, `irqlat` shows the delay"
+	default y
+
 source "Kconfig.zephyr"

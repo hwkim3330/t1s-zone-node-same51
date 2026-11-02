@@ -22,6 +22,7 @@ from collections import deque
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import vehicle_api as api  # noqa: E402
+import bus_auth  # noqa: E402
 
 try:
     import zenoh
@@ -121,24 +122,34 @@ def _on_vehicle(m):
 
 def _on_ack(m):
     t = m.payload.to_string()
-    role = str(m.key_expr).split('/')[1]
-    if t.startswith('sh:') and role in replies:
-        replies[role][1] = t[3:]
-        replies[role][0].set()
+    try:
+        i = int(str(m.key_expr).split('/')[1][3:])     # t1s/sam<id>/ack: by the node's unique id
+    except ValueError:
+        return
+    if t.startswith('sh:') and i in replies:
+        replies[i][1] = t[3:]
+        replies[i][0].set()
 
 
 def sh(node_id, cmd, wait=5.0):
-    """a console command on a node over the bus (firmware >= 0.13.10: "sh <cmd>" on ecu/<role>/cmd, answered on
-    cmd/ack) -> its output lines, or None (no session, unknown node, no answer)"""
+    """a console command on a node over the bus (firmware >= 0.13.10) -> its output lines, or None (no session,
+    unknown node, no answer). Addressed by the node's id (t1s/sam<id>/cmd), not its role: two nodes with one role
+    (nodes 3 and 5 before 0.14) made the role ambiguous. Firmware >= 0.14 wants "ash" (HMAC, tools/bus_auth.py) when its
+    heartbeat says auth 2; older firmware takes "sh <cmd>"."""
     with lock:
-        role = next((r for r, i in roles.items() if i == node_id), None)
-    if not role or session[0] is None:
+        n = nodes.get(node_id)
+        hb = dict(n['hello']) if n and n['hello'] else None
+    if hb is None or session[0] is None:
         return None
+    try:
+        p = bus_auth.payload(cmd, hb)
+    except RuntimeError as e:
+        return [str(e)]
     ev = threading.Event()
-    replies[role] = [ev, None]
-    session[0].put(f'ecu/{role}/cmd', 'sh ' + cmd)
+    replies[node_id] = [ev, None]
+    session[0].put(f't1s/sam{node_id}/cmd', p)
     ok = ev.wait(wait)
-    r = replies.pop(role, [None, None])[1]
+    r = replies.pop(node_id, [None, None])[1]
     return r.strip('\r\n').splitlines() if ok and r is not None else None
 
 
@@ -153,7 +164,7 @@ def start():
                 c.insert_json5('connect/endpoints', json.dumps([ROUTER]))
                 s = zenoh.open(c)
                 session[0] = s
-                s.declare_subscriber('ecu/*/cmd/ack', _on_ack)
+                s.declare_subscriber('t1s/*/ack', _on_ack)
                 for k in ('ecu/*/status', 't1s/*/hello'):
                     s.declare_subscriber(k, _on_hello)
                 for k in ('ecu/*/display', 't1s/*/panel'):

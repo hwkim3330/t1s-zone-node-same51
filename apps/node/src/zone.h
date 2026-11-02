@@ -33,7 +33,24 @@ double zone_clock_s(void); /* the PTP clock in seconds (shared by locked zones),
 /* zone_zenoh.c: publish one sensor value (key below "vehicle/", one little-endian scalar) if connected */
 enum { ZONE_PUB_STICK_X, ZONE_PUB_STICK_Y, ZONE_PUB_PROX_RAW, ZONE_PUB_PROX_M, ZONE_PUB_PANEL, ZONE_PUB_BEAM, ZONE_PUB_VIEW, ZONE_PUB_PROX_WARN, ZONE_PUB_COUNT };
 #define PROX_WARN_M 1.5f
-const char *zone_role(void); /* "zone-left" | "zone-right" (the panel half) */
+/* main.c: the ECU's role on the Vehicle API (ecu/<role>/...): saved (`zone role`) > MAC table > Kconfig APP_ROLE >
+ * the panel half / PLCA id parity (odd zone-left, even zone-right). Unique per board: two nodes with one role
+ * collide on ecu/<role>/status and the console cannot address them (2026-11-02, nodes 3 and 5). */
+const char *zone_role(void);
+bool zone_role_valid(const char *r);
+int zone_panel_half_cfg(void); /* zone_panel.c: the saved `panel half` (0 left, 1 right), -1 = none */
+/* zone_zenoh.c: true once connected and the first heartbeat is out (the OTA health check); re-declare the keys */
+bool zone_zenoh_healthy(void);
+void zone_zenoh_rekey(void);
+uint32_t zone_vss_keys(void); /* zone_lamps.c: vehicle keys received since boot */
+/* main.c: the running image is confirmed (MCUboot keeps it); what the health check still waits for */
+bool zone_img_confirmed(void);
+const char *zone_health_str(void);
+/* zone_guard.c: SMP/UDP arming (seconds left, -1 = no arming in this build), IRQ latency probe */
+int zone_ota_arm(int seconds);
+int zone_ota_armed_s(void);
+uint32_t zone_smp_accepted(void); /* SMP datagrams let through since boot */
+uint32_t zone_irq_lat_max_ns(void);
 void zone_publish(int which, const void *b, size_t n);
 
 /* main.c: RSTC.RCAUSE at boot (bit 5 watchdog, 6 software, 4 external, 0 power-on) */

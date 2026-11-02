@@ -13,13 +13,20 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/shell/shell_dummy.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/random/random.h>
 #include <zenoh-pico.h>
+#ifdef CONFIG_APP_BUS_SHELL_AUTH
+#include <tinycrypt/hmac.h>
+#include <tinycrypt/constants.h>
+#include "bus_key.h"
+#endif
 #include "zone.h"
 #include "vehicle_api.h"
 
@@ -27,6 +34,11 @@ LOG_MODULE_REGISTER(zone_zenoh, LOG_LEVEL_INF);
 
 static char locator[64] = CONFIG_APP_ZENOH_LOCATOR;
 static volatile bool connected;
+static volatile bool hb_out;      /* the first heartbeat of this session went out (the OTA health check) */
+static volatile bool rekey;       /* the role changed: reconnect, so every key is declared again */
+static char boot_nonce[9];        /* per boot, in the heartbeat: what an authenticated command is bound to */
+static volatile int conflict_id = -1; /* another node heard on our own ecu/<role>/status */
+static volatile int64_t conflict_at;
 static uint32_t n_hello, n_cmd, n_open_fail, n_reconnect;
 /* zenoh-pico 1.10 on Zephyr takes recv() == 0 (peer closed) for "no data" and never closes the
  * session, so a dead router or link went unnoticed. Anything we subscribe to counts as proof of life:
@@ -104,6 +116,17 @@ SETTINGS_STATIC_HANDLER_DEFINE(zz, "zenoh", NULL, zz_set, NULL, NULL);
 #define FW_VERSION "dev"
 #endif
 
+#if defined(CONFIG_APP_BUS_SHELL_AUTH)
+#define AUTH_MODE 2
+#define KEY_ID BUS_KEY_ID
+#elif defined(CONFIG_APP_BUS_SHELL)
+#define AUTH_MODE 1
+#define KEY_ID ""
+#else
+#define AUTH_MODE 0
+#define KEY_ID ""
+#endif
+
 static void ack_wait(const char *msg, k_timeout_t wait);
 #define ack(msg) ack_wait((msg), K_MSEC(10))
 
@@ -125,15 +148,108 @@ static void ack_wait(const char *msg, k_timeout_t wait)
 	k_mutex_unlock(&pub_lock);
 }
 
+bool zone_zenoh_healthy(void) { return connected && hb_out; }
+void zone_zenoh_rekey(void) { rekey = true; }
+
 /*
- * "sh <command>" on ecu/<role>/cmd: the node's own console over the bus. Runs on the dummy shell backend in its own
- * thread (`t1s wake` takes seconds; the zenoh read task must not wait on it) and answers "sh:<output>" on cmd/ack --
- * what the console's node buttons (sleep, wake, diag, LED map) used the USB cable for. One at a time; bench only.
+ * The node's own console over the bus, on ecu/<role>/cmd (and the id-keyed t1s/sam<id>/cmd), never on ecu/all/cmd:
+ *   ash <ctr> <tag> <command>   authenticated (CONFIG_APP_BUS_SHELL_AUTH): tag = hex of the first 16 bytes of
+ *                               HMAC-SHA256(key, "<bn>|<id>|<ctr>|<command>"), bn = this boot's nonce (heartbeat "bn"),
+ *                               id = the PLCA id, ctr a decimal counter above the last one taken (the PC's ms clock):
+ *                               a captured command is good neither again nor on another node nor after a reboot.
+ *   sh <command>                the bench's old form, only in a build without APP_BUS_SHELL_AUTH.
+ * The command must be on CONFIG_APP_BUS_SHELL_ALLOW. It runs on the dummy shell backend in its own thread (`t1s wake`
+ * takes seconds; the zenoh read task must not wait on it) and the answer is "sh:<output>" on cmd/ack, or
+ * "sh:(denied: <why>)". One at a time. CONFIG_APP_BUS_SHELL=n (release.conf): "sh:(disabled)".
  */
+#ifdef CONFIG_APP_BUS_SHELL
 static char sh_cmd[96];
 static char sh_out[CONFIG_SHELL_BACKEND_DUMMY_BUF_SIZE + 4];
 static atomic_t sh_busy;
+static uint32_t n_sh_ok, n_sh_denied;
 K_SEM_DEFINE(sh_sem, 0, 1);
+
+/* on the ';' list: the entry itself or its prefix + ' '; an entry ending in '$' only exactly */
+static bool sh_allowed(const char *cmd)
+{
+	const char *l = CONFIG_APP_BUS_SHELL_ALLOW;
+
+	while (*l) {
+		const char *e = strchr(l, ';');
+		size_t n = e ? (size_t)(e - l) : strlen(l);
+		bool exact = n && l[n - 1] == '$';
+		size_t m = exact ? n - 1 : n;
+
+		if (m && !strncmp(cmd, l, m) && (cmd[m] == 0 || (!exact && cmd[m] == ' '))) {
+			return true;
+		}
+		l += n + (e ? 1 : 0);
+	}
+	return false;
+}
+
+#ifdef CONFIG_APP_BUS_SHELL_AUTH
+static uint64_t last_ctr;
+
+static int hexval(char c)
+{
+	return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+}
+
+/* "ash <ctr> <tag> <cmd>" -> the command (pointer into s), or NULL and why */
+static const char *ash_verify(const char *s, const char **why)
+{
+#ifdef BUS_KEY_MISSING
+	*why = "no key in this build";
+	return NULL;
+#else
+	char *end;
+	uint64_t ctr = strtoull(s, &end, 10);
+	const char *tag = end;
+
+	if (end == s || *tag != ' ') {
+		*why = "format: ash <ctr> <tag> <cmd>";
+		return NULL;
+	}
+	tag++;
+	const char *cmd = strchr(tag, ' ');
+
+	if (!cmd || cmd - tag != 32) {
+		*why = "format: ash <ctr> <tag> <cmd>";
+		return NULL;
+	}
+	cmd++;
+	char msg[160];
+	int ml = snprintf(msg, sizeof(msg), "%s|%u|%llu|%s", boot_nonce, zone_plca_id(), (unsigned long long)ctr, cmd);
+	struct tc_hmac_state_struct h;
+	uint8_t mac[TC_SHA256_DIGEST_SIZE];
+
+	if (ml <= 0 || ml >= (int)sizeof(msg) || tc_hmac_set_key(&h, bus_key, sizeof(bus_key)) != TC_CRYPTO_SUCCESS ||
+	    tc_hmac_init(&h) != TC_CRYPTO_SUCCESS || tc_hmac_update(&h, msg, ml) != TC_CRYPTO_SUCCESS ||
+	    tc_hmac_final(mac, sizeof(mac), &h) != TC_CRYPTO_SUCCESS) {
+		*why = "hmac";
+		return NULL;
+	}
+	uint8_t diff = 0;
+
+	for (int i = 0; i < 16; i++) { /* constant time */
+		int a = hexval(tag[2 * i]), b = hexval(tag[2 * i + 1]);
+
+		diff |= (a < 0 || b < 0) ? 0xff : (uint8_t)((a << 4 | b) ^ mac[i]);
+	}
+	if (diff) {
+		*why = "bad tag";
+		return NULL;
+	}
+	if (ctr <= last_ctr) {
+		*why = "stale counter (replay?)";
+		return NULL;
+	}
+	last_ctr = ctr;
+	return cmd;
+#endif
+}
+#endif /* CONFIG_APP_BUS_SHELL_AUTH */
 
 static void sh_thread(void *a, void *b, void *c)
 {
@@ -153,10 +269,46 @@ static void sh_thread(void *a, void *b, void *c)
 }
 K_THREAD_DEFINE(zone_sh, 3072, sh_thread, NULL, NULL, NULL, 10, 0, 0);
 
+static void sh_request(const char *body, bool authed, bool to_all)
+{
+	static char deny[64];
+	const char *why = NULL, *cmd = body;
+
+	if (to_all) {
+		why = "not on ecu/all";
+#ifdef CONFIG_APP_BUS_SHELL_AUTH
+	} else if (!authed) {
+		why = "authentication required (ash)";
+	} else if (!(cmd = ash_verify(body, &why))) {
+		/* why set */
+#endif
+	} else if (strlen(cmd) >= sizeof(sh_cmd)) {
+		why = "too long";
+	} else if (!sh_allowed(cmd)) {
+		why = "not on the allow list";
+	}
+	if (why) {
+		n_sh_denied++;
+		LOG_WRN("bus shell denied (%s)", why);
+		snprintf(deny, sizeof(deny), "sh:(denied: %s)", why);
+		ack(deny);
+		return;
+	}
+	if (!atomic_cas(&sh_busy, 0, 1)) {
+		ack("sh:(busy)");
+		return;
+	}
+	n_sh_ok++;
+	strncpy(sh_cmd, cmd, sizeof(sh_cmd) - 1);
+	k_sem_give(&sh_sem);
+}
+#endif /* CONFIG_APP_BUS_SHELL */
+
 static void on_cmd(z_loaned_sample_t *sample, void *arg)
 {
 	z_owned_string_t s;
-	char cmd[sizeof(sh_cmd) + 4] = {0};
+	char cmd[200] = {0};
+	bool to_all = (int)(intptr_t)arg >= 2; /* subscriptions 2, 3: ecu/all/cmd, t1s/all/cmd */
 
 	z_bytes_to_string(z_sample_payload(sample), &s);
 	size_t n = MIN(z_string_len(z_string_loan(&s)), sizeof(cmd) - 1);
@@ -176,16 +328,41 @@ static void on_cmd(z_loaned_sample_t *sample, void *arg)
 		ack(cmd);
 	} else if (!strcmp(cmd, "ping")) {
 		ack("pong");
-	} else if (!strncmp(cmd, "sh ", 3)) {
-		if (!atomic_cas(&sh_busy, 0, 1)) {
-			ack("sh:(busy)");
-			return;
+	} else if (!strncmp(cmd, "sh ", 3) || !strncmp(cmd, "ash ", 4)) {
+#ifdef CONFIG_APP_BUS_SHELL
+		bool authed = cmd[0] == 'a';
+
+		sh_request(cmd + (authed ? 4 : 3), authed, to_all);
+#else
+		if (!to_all) {
+			ack("sh:(disabled)");
 		}
-		strncpy(sh_cmd, cmd + 3, sizeof(sh_cmd) - 1);
-		k_sem_give(&sh_sem);
+#endif
 	} else {
 		LOG_WRN("cmd '%s' not understood", cmd);
 		ack("unknown");
+	}
+}
+
+/* a heartbeat on our own ecu/<role>/status is another node with the same role (zenohd does not echo our own) */
+static void on_own_status(z_loaned_sample_t *sample, void *arg)
+{
+	z_owned_string_t s;
+	char b[48] = {0};
+
+	z_bytes_to_string(z_sample_payload(sample), &s);
+	memcpy(b, z_string_data(z_string_loan(&s)), MIN(z_string_len(z_string_loan(&s)), sizeof(b) - 1));
+	z_string_drop(z_string_move(&s));
+	const char *p = strstr(b, "\"id\":");
+	int other = p ? atoi(p + 5) : -1;
+
+	if (other != zone_plca_id()) {
+		if (conflict_id != other) {
+			LOG_ERR("role collision: node %d also publishes ecu/%s/status (`zone role <name>` on one of them)", other,
+				zone_role());
+		}
+		conflict_id = other;
+		conflict_at = k_uptime_get();
 	}
 }
 
@@ -209,8 +386,12 @@ static void on_vehicle(z_loaned_sample_t *sample, void *arg)
 
 static void zenoh_thread(void *a, void *b, void *c)
 {
-	char ke[64], msg[208];   /* the heartbeat JSON (~140 B with fw) */
+	char ke[64], msg[320];   /* the heartbeat JSON (~230 B) */
 
+	uint32_t bn;
+
+	sys_csrand_get(&bn, sizeof(bn));
+	snprintf(boot_nonce, sizeof(boot_nonce), "%08x", bn);
 	while (!zone_bus_up()) {
 		k_msleep(500);
 	}
@@ -263,7 +444,7 @@ static void zenoh_thread(void *a, void *b, void *c)
 
 			key_fmt(sk[i], sizeof(sk[i]), sub_k[i], id);
 			z_view_keyexpr_from_str_unchecked(&k, sk[i]);
-			z_closure(&c, i < 4 ? on_cmd : on_vehicle, NULL, NULL);
+			z_closure(&c, i < 4 ? on_cmd : on_vehicle, NULL, (void *)(intptr_t)i);
 			if (z_declare_subscriber(z_session_loan(&s), &sub[i], z_view_keyexpr_loan(&k),
 						 z_closure_sample_move(&c), NULL) < 0) {
 				LOG_ERR("zenoh: cannot subscribe %s (heap?)", sk[i]);
@@ -276,6 +457,16 @@ static void zenoh_thread(void *a, void *b, void *c)
 		z_view_keyexpr_from_str_unchecked(&k, VAPI_ECU_ALL_CONFIG_DISPLAY_VIEW);
 		z_closure(&cv, on_vehicle, NULL, NULL);
 		z_declare_subscriber(z_session_loan(&s), &sub_view, z_view_keyexpr_loan(&k), z_closure_sample_move(&cv), NULL);
+
+		/* our own status key: anything heard there is another node with this role */
+		z_owned_subscriber_t sub_own;
+		z_owned_closure_sample_t co;
+		static char own_k[64];
+
+		key_fmt(own_k, sizeof(own_k), VAPI_ECU_STATUS, id);
+		z_view_keyexpr_from_str_unchecked(&k, own_k);
+		z_closure(&co, on_own_status, NULL, NULL);
+		z_declare_subscriber(z_session_loan(&s), &sub_own, z_view_keyexpr_loan(&k), z_closure_sample_move(&co), NULL);
 
 		for (int i = 0; i < ZONE_PUB_COUNT; i++) {
 			static char pk[ZONE_PUB_COUNT][2][64];
@@ -311,10 +502,19 @@ static void zenoh_thread(void *a, void *b, void *c)
 			if (po != INT64_MIN) {
 				snprintf(ptp, sizeof(ptp), "%lld", (long long)po);
 			}
+			char conf[16] = "";
+
+			if (conflict_id >= 0 && k_uptime_get() - conflict_at < 10000) {
+				snprintf(conf, sizeof(conf), ",\"conflict\":%d", conflict_id);
+			}
+			/* bn: the per-boot nonce authenticated commands are bound to; auth: what the bus shell takes
+			 * (0 off, 1 "sh", 2 "ash" + key id kid); conf: the image is confirmed */
 			snprintf(msg, sizeof(msg),
 				 "{\"id\":%u,\"ip\":\"%s\",\"up\":%u,\"pst\":%d,\"cmds\":%u,\"ptp_ns\":%s,\"rst\":%u,"
-				 "\"role\":\"%s\",\"api\":\"%s\",\"fw\":\"%s\"}", id, ip, (unsigned)(k_uptime_get() / 1000),
-				 zone_bus_up(), n_cmd, ptp, zone_reset_cause, zone_role(), VAPI_HASH, FW_VERSION);
+				 "\"role\":\"%s\",\"api\":\"%s\",\"fw\":\"%s\",\"conf\":%d,\"bn\":\"%s\",\"auth\":%d,"
+				 "\"kid\":\"%s\",\"ota\":%d%s}", id, ip, (unsigned)(k_uptime_get() / 1000),
+				 zone_bus_up(), n_cmd, ptp, zone_reset_cause, zone_role(), VAPI_HASH, FW_VERSION,
+				 zone_img_confirmed(), boot_nonce, AUTH_MODE, KEY_ID, zone_ota_armed_s(), conf);
 			/*
 			 * A put that fails is not a lost session: with the transmit lock busy (the panel thread's
 			 * sensors, an ack) zenoh-pico drops the message and returns EBUSY ("System error: 16").
@@ -324,7 +524,9 @@ static void zenoh_thread(void *a, void *b, void *c)
 			if (!k_mutex_lock(&pub_lock, K_MSEC(20))) {
 				for (int v = 0; v < 2; v++) {
 					z_bytes_copy_from_str(&pl, msg);
-					z_publisher_put(z_publisher_loan(&hello[v]), z_bytes_move(&pl), NULL);
+					if (z_publisher_put(z_publisher_loan(&hello[v]), z_bytes_move(&pl), NULL) == 0 && v == 0) {
+						hb_out = true;
+					}
 				}
 				if (!strcmp(zone_role(), "zone-left")) {
 					/* the lamp state this zone shows, as the owner of the keys (1 Hz, max_age 2 s) */
@@ -345,6 +547,11 @@ static void zenoh_thread(void *a, void *b, void *c)
 			if (z_session_is_closed(z_session_loan(&s))) {
 				break;
 			}
+			if (rekey) {
+				rekey = false;
+				LOG_INF("zenoh: role now %s, declaring the keys again", zone_role());
+				break;
+			}
 			if (k_uptime_get() - last_rx_ms > WATCHDOG_MS) {
 				LOG_WRN("zenoh: nothing received for %d s, reconnecting", WATCHDOG_MS / 1000);
 				n_reconnect++;
@@ -357,6 +564,7 @@ static void zenoh_thread(void *a, void *b, void *c)
 		/* no sender may touch the session from here: then the tasks stop, then everything is freed */
 		k_mutex_lock(&pub_lock, K_FOREVER);
 		connected = false;
+		hb_out = false;
 		ack_ok = false;
 		sensors_ok = false;
 		zp_stop_read_task(z_session_loan_mut(&s));
@@ -365,6 +573,7 @@ static void zenoh_thread(void *a, void *b, void *c)
 			z_undeclare_subscriber(z_subscriber_move(&sub[i]));
 		}
 		z_undeclare_subscriber(z_subscriber_move(&sub_view));
+		z_undeclare_subscriber(z_subscriber_move(&sub_own));
 		for (int v = 0; v < 2; v++) {
 			z_undeclare_publisher(z_publisher_move(&hello[v]));
 			z_undeclare_publisher(z_publisher_move(&pub_ack[v]));
@@ -394,8 +603,13 @@ static int cmd_zenoh(const struct shell *sh, size_t argc, char **argv)
 		return 0;
 	}
 	shell_print(sh, "zenoh: %s %s | hello sent %u | cmds %u | open failures %u | watchdog reconnects %u | "
-		    "last rx %lld ms ago", connected ? "connected to" : "not connected, router", locator, n_hello,
-		    n_cmd, n_open_fail, n_reconnect, (long long)(k_uptime_get() - last_rx_ms));
+		    "last rx %lld ms ago | role %s%s", connected ? "connected to" : "not connected, router", locator, n_hello,
+		    n_cmd, n_open_fail, n_reconnect, (long long)(k_uptime_get() - last_rx_ms), zone_role(),
+		    conflict_id >= 0 ? " (COLLISION seen)" : "");
+#ifdef CONFIG_APP_BUS_SHELL
+	shell_print(sh, "zenoh: bus shell %s, key %s, ran %u, denied %u", AUTH_MODE == 2 ? "ash (HMAC)" : "sh (open)", KEY_ID,
+		    n_sh_ok, n_sh_denied);
+#endif
 	return 0;
 }
 SHELL_CMD_REGISTER(zenoh, NULL, "zenoh [locator]: status, or set the router (saved)", cmd_zenoh);

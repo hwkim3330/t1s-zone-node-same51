@@ -53,11 +53,16 @@ static const struct {
 	uint8_t mac[6];
 	uint8_t id;
 	uint8_t ip4; /* 192.168.100.<ip4> */
+	const char *role; /* the vehicle zone (ecu/<role>/...): explicit per board, never derived from the id */
 } bench[] = {
-	{{0xfc, 0xc2, 0x3d, 0x39, 0xe9, 0xb8}, 3, 73},
-	{{0xfc, 0xc2, 0x3d, 0x3a, 0x0f, 0x32}, 4, 74},
-	{{0xfc, 0xc2, 0x3d, 0x3a, 0x0c, 0xd2}, 5, 75},   /* third board (…486), 2026-10-29 */
+	{{0xfc, 0xc2, 0x3d, 0x39, 0xe9, 0xb8}, 3, 73, "zone-left"},
+	{{0xfc, 0xc2, 0x3d, 0x3a, 0x0f, 0x32}, 4, 74, "zone-right"},
+	{{0xfc, 0xc2, 0x3d, 0x3a, 0x0c, 0xd2}, 5, 75, "zone-rear"},   /* third board (…486), 2026-10-29 */
 };
+
+/* The ECU's role: saved (`zone role`) > the MAC table > Kconfig APP_ROLE > derived (zone_role()) */
+static char role[16];
+static const char *role_src = "derived";
 
 static struct in_addr my_ip;
 static volatile bool bus_up;
@@ -111,7 +116,22 @@ static int zone_set(const char *key, size_t len, settings_read_cb read, void *ar
 	return 0;
 }
 
-SETTINGS_STATIC_HANDLER_DEFINE(zone, "zone", NULL, zone_set, NULL, NULL);
+/* "zone/role": a string, so not through zone_set's u32 */
+static int zone_set_any(const char *key, size_t len, settings_read_cb read, void *arg)
+{
+	if (!strcmp(key, "role")) {
+		char r[sizeof(role)] = {0};
+
+		if (len < sizeof(r) && read(arg, r, len) == (ssize_t)len && zone_role_valid(r)) {
+			strcpy(role, r);
+			role_src = "saved";
+		}
+		return 0;
+	}
+	return zone_set(key, len, read, arg);
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(zone, "zone", NULL, zone_set_any, NULL, NULL);
 
 static void apply_ip(struct in_addr ip)
 {
@@ -149,10 +169,20 @@ static void pick_identity(void)
 			}
 		}
 	}
+	for (size_t i = 0; i < ARRAY_SIZE(bench) && strcmp(role_src, "saved"); i++) {
+		if (!memcmp(bench[i].mac, mac, 6) && bench[i].role) {
+			strncpy(role, bench[i].role, sizeof(role) - 1);
+			role_src = "mac table";
+		}
+	}
+	if (!role[0] && zone_role_valid(CONFIG_APP_ROLE)) {
+		strncpy(role, CONFIG_APP_ROLE, sizeof(role) - 1);
+		role_src = "kconfig";
+	}
 	apply_ip(my_ip);
-	LOG_INF("identity (%s): PLCA %u/%u, ip %d.%d.%d.%d", id_src,
+	LOG_INF("identity (%s): PLCA %u/%u, ip %d.%d.%d.%d, role %s (%s)", id_src,
 		plca_cfg.t1s_param.plca.node_id, plca_cfg.t1s_param.plca.node_count,
-		my_ip.s4_addr[0], my_ip.s4_addr[1], my_ip.s4_addr[2], my_ip.s4_addr[3]);
+		my_ip.s4_addr[0], my_ip.s4_addr[1], my_ip.s4_addr[2], my_ip.s4_addr[3], zone_role(), role_src);
 }
 
 static void set_mac_from_eeprom(void)
@@ -191,6 +221,36 @@ static int early_mac(void)
 	return 0;
 }
 SYS_INIT(early_mac, POST_KERNEL, 85);
+
+/* a role is a key segment: lower-case letters, digits and '-', not one of the shared names */
+bool zone_role_valid(const char *r)
+{
+	size_t n = strlen(r);
+
+	if (n == 0 || n >= sizeof(role) || !strcmp(r, "all") || !strcmp(r, "ads")) {
+		return false;
+	}
+	for (size_t i = 0; i < n; i++) {
+		if (!((r[i] >= 'a' && r[i] <= 'z') || (r[i] >= '0' && r[i] <= '9') || r[i] == '-')) {
+			return false;
+		}
+	}
+	return true;
+}
+
+const char *zone_role(void)
+{
+	if (role[0]) {
+		return role;
+	}
+	/* the two-node bench's old rule: the panel half, else the PLCA id's parity */
+#ifdef CONFIG_APP_ZENOH
+	int h = zone_panel_half_cfg();
+#else
+	int h = -1;
+#endif
+	return (h >= 0 ? h : (plca_cfg.t1s_param.plca.node_id & 1) ? 0 : 1) ? "zone-right" : "zone-left";
+}
 
 static void print_status(const struct shell *sh)
 {
@@ -444,6 +504,125 @@ SHELL_STATIC_SUBCMD_SET_CREATE(t1s_cmds,
 	SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(t1s, &t1s_cmds, "10BASE-T1S node", NULL);
 
+/*
+ * OTA health check. An image MCUboot booted for a test (swap type REVERT) is confirmed only once the node does its job:
+ * PLCA beacons heard, Zenoh connected and the first heartbeat out, and it can be updated again (an SMP request came
+ * through the filter: the bus shell key, arming and filter work), optionally a vehicle key received. Not healthy
+ * within CONFIG_APP_CONFIRM_TIMEOUT_S = reboot unconfirmed, and MCUboot swaps the previous image back. An image that is
+ * not a test boot (flashed over SWD: nothing to go back to) is confirmed at once, as before.
+ */
+static bool img_ok = true;
+static bool img_test;
+static const char *health_wait = "-";
+
+bool zone_img_confirmed(void) { return img_ok; }
+
+const char *zone_health_str(void)
+{
+	static char b[64];
+
+	snprintf(b, sizeof(b), "%s%s%s", img_ok ? "confirmed" : "TEST BOOT, waiting for ", img_ok ? "" : health_wait,
+		 img_ok && img_test ? " (after the health check)" : "");
+	return b;
+}
+
+static void health_init(void)
+{
+#ifdef CONFIG_BOOTLOADER_MCUBOOT
+	img_ok = boot_is_img_confirmed();
+	if (!img_ok && mcuboot_swap_type() != BOOT_SWAP_TYPE_REVERT) {
+		img_ok = boot_write_img_confirmed() == 0;
+		LOG_INF("image confirmed (not a test boot) (%d)", img_ok);
+	} else if (!img_ok) {
+		img_test = true;
+		LOG_INF("test boot: confirmed after the health check, else back to the previous image after %d s",
+			CONFIG_APP_CONFIRM_TIMEOUT_S);
+	}
+#endif
+}
+
+static void health_check(bool pst)
+{
+#ifdef CONFIG_BOOTLOADER_MCUBOOT
+	if (img_ok) {
+		return;
+	}
+	const char *wait = !pst ? "PLCA beacons" : NULL;
+
+#ifdef CONFIG_APP_ZENOH
+	if (!wait && !zone_zenoh_healthy()) {
+		wait = "Zenoh + first heartbeat";
+	}
+#ifdef CONFIG_APP_CONFIRM_NEED_VEHICLE
+	if (!wait && !zone_vss_keys()) {
+		wait = "a vehicle key";
+	}
+#endif
+#endif
+#ifdef CONFIG_APP_CONFIRM_NEED_SMP
+	if (!wait && !zone_smp_accepted()) {
+		wait = "an SMP request (smp_udp.py arms + lists)";
+	}
+#endif
+	if (!wait) {
+		int r = boot_write_img_confirmed();
+
+		img_ok = r == 0;
+		LOG_INF("health check passed at %lld ms: image confirmed (%d)", (long long)k_uptime_get(), r);
+		return;
+	}
+	health_wait = wait;
+	if (k_uptime_get() > CONFIG_APP_CONFIRM_TIMEOUT_S * 1000LL) {
+		LOG_ERR("health check failed for %d s (waiting for %s): rebooting unconfirmed, MCUboot goes back to the "
+			"previous image", CONFIG_APP_CONFIRM_TIMEOUT_S, wait);
+		k_msleep(300);
+		sys_reboot(SYS_REBOOT_WARM);
+	}
+#else
+	ARG_UNUSED(pst);
+#endif
+}
+
+static int cmd_zone(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc > 2 && !strcmp(argv[1], "role")) {
+		if (!strcmp(argv[2], "auto")) {
+			settings_delete("zone/role");
+			role[0] = 0;
+			role_src = "derived";
+			/* back to the MAC table / Kconfig, as at boot */
+			for (size_t i = 0; i < ARRAY_SIZE(bench); i++) {
+				if (!memcmp(bench[i].mac, mac, 6) && bench[i].role) {
+					strncpy(role, bench[i].role, sizeof(role) - 1);
+					role_src = "mac table";
+				}
+			}
+			if (!role[0] && zone_role_valid(CONFIG_APP_ROLE)) {
+				strncpy(role, CONFIG_APP_ROLE, sizeof(role) - 1);
+				role_src = "kconfig";
+			}
+		} else if (zone_role_valid(argv[2])) {
+			strncpy(role, argv[2], sizeof(role) - 1);
+			role[sizeof(role) - 1] = 0;
+			role_src = "saved";
+			settings_save_one("zone/role", role, strlen(role));
+		} else {
+			shell_print(sh, "zone role <a-z0-9->: 1..15 characters, not 'all' / 'ads'");
+			return -EINVAL;
+		}
+#ifdef CONFIG_APP_ZENOH
+		zone_zenoh_rekey(); /* the keys carry the role: declare them again */
+#endif
+	} else if (argc > 1) {
+		shell_print(sh, "zone [role <name>|auto]");
+		return -EINVAL;
+	}
+	shell_print(sh, "zone: id %u, role %s (%s), image %s", plca_cfg.t1s_param.plca.node_id, zone_role(), role_src,
+		    zone_health_str());
+	return 0;
+}
+SHELL_CMD_REGISTER(zone, NULL, "zone [role <name>|auto]: this ECU's role on the Vehicle API (saved)", cmd_zone);
+
 /* RSTC.RCAUSE (SAM D5x/E5x, 0x40000C00): why the chip last reset, for the boot log and the heartbeat */
 uint8_t zone_reset_cause;
 
@@ -469,13 +648,7 @@ int main(void)
 	iface = net_if_lookup_by_dev(t1s);
 	LOG_INF("LAN865x bound: %s, iface %d", t1s->name, net_if_get_by_iface(iface));
 
-#ifdef CONFIG_BOOTLOADER_MCUBOOT
-	/* Got this far with the network driver up: keep this image. An update that never
-	 * reaches here is swapped back out by MCUboot on the next reset. */
-	if (!boot_is_img_confirmed()) {
-		LOG_INF("new image confirmed (%d)", boot_write_img_confirmed());
-	}
-#endif
+	health_init();
 	if (wake_in.port && device_is_ready(wake_in.port)) {
 		gpio_pin_configure_dt(&wake_in, GPIO_OUTPUT_INACTIVE);
 	}
@@ -580,6 +753,7 @@ int main(void)
 		}
 
 		bus_up = pst;
+		health_check(pst);
 		/* LED0 (AUTO): solid = PLCA active (beacons), slow blink = waiting for a coordinator */
 		switch (zone_led_mode) {
 		case ZONE_LED_ON:

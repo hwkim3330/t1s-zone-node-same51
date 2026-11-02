@@ -57,10 +57,24 @@ static uint32_t frames;
 static uint8_t lamp_mode = 1;      /* 1 = the zone's lamps (zone_lampgfx.h), 0 = the cluster picture */
 static uint8_t beam_on;
 
-/* the ECU's role on the Vehicle API (ecu/<role>/...): which side of the car this zone is */
-const char *zone_role(void)
+int zone_panel_half_cfg(void) { return half; }
+
+/* how DI is driven: 0 = SPI + DMA (dts/panel-slot2.overlay), 1 = bit-bang, 2 = off (`panel drv`, saved) */
+#define HAS_PANEL_SPI DT_NODE_HAS_PROP(USER, panel_spi)
+enum { DRV_SPI, DRV_BB, DRV_OFF };
+static uint8_t drv = HAS_PANEL_SPI ? DRV_SPI : DRV_BB;
+static volatile bool drv_changed = true;
+
+/* which half of the 20x10 picture this panel shows: the saved `panel half`, else the role's side (zone-left /
+ * zone-right), else the PLCA id's parity (odd = left) -- a zone-rear node shows the left half unless told */
+static int panel_half(void)
 {
-	return (half >= 0 ? half : (zone_plca_id() & 1) ? 0 : 1) ? "zone-right" : "zone-left";
+	if (half >= 0) {
+		return half;
+	}
+	const char *r = zone_role();
+
+	return !strcmp(r, "zone-left") ? 0 : !strcmp(r, "zone-right") ? 1 : (zone_plca_id() & 1) ? 0 : 1;
 }
 static uint8_t view;               /* the stick node's panel view for every zone (left flick toggles it) */            /* the stick node's high beam (right flick toggles it) */
 
@@ -74,6 +88,8 @@ static int panel_set(const char *key, size_t len, settings_read_cb read, void *a
 		read(arg, &lamp_mode, 1);
 	} else if (!strcmp(key, "half") && len == sizeof(half)) {
 		read(arg, &half, sizeof(half));
+	} else if (!strcmp(key, "drv") && len == 1) {
+		read(arg, &drv, 1);
 	}
 	return 0;
 }
@@ -160,6 +176,209 @@ static void ws2812_send(const uint8_t *grb, size_t n)
 	k_busy_wait(300);
 }
 
+/*
+ * The same frame through SERCOM0 + DMA (dts/panel-slot2.overlay): one SPI byte per LED bit at 6.67 MHz, 150 ns per SPI
+ * bit, so 0xC0 = 300 ns high and 0xF8 = 750 ns high in a 1.2 us bit -- the bit-bang's timing. The DMAC feeds the
+ * SERCOM: interrupts stay on, the CPU waits on a semaphore (2.9 ms per frame), and nothing the CPU does (an interrupt,
+ * a flash wait state) can stretch a bit. A leading and a trailing 0x00 keep the line low around the frame.
+ */
+#if HAS_PANEL_SPI
+static const struct device *const pspi = DEVICE_DT_GET(DT_PHANDLE(USER, panel_spi));
+static const struct spi_config pspi_cfg = {
+	.frequency = 6666666, /* 120 MHz / (2 x (8 + 1)): BAUD 8 exactly */
+	.operation = SPI_OP_MODE_MASTER | SPI_WORD_SET(8) | SPI_TRANSFER_MSB,
+};
+#define WS_ZERO 0xC0
+#define WS_ONE 0xF8
+#define SPI_LEAD 16 /* zero bytes before the data: 19 us low (the self-test's sampler starts in it) */
+static uint8_t spibuf[SPI_LEAD + 300 * 8 + 1];
+static K_SEM_DEFINE(spi_done, 0, 1);
+static K_MUTEX_DEFINE(spi_lock); /* spibuf + SERCOM0: the panel thread's frames and `panel spitest` */
+static volatile int spi_rc;
+static uint32_t spi_frames, spi_err, spi_us_max;
+
+/*
+ * The SERCOM's data-out idles HIGH between transfers (measured with `panel spitest`, 2026-11-02): a WS2812 line resting
+ * high never latches and reads the next frame's first edge as a bit. So the pin belongs to the SERCOM only while a
+ * frame is on the wire: between frames it is a PORT output driven low (PMUXEN off). The frame starts with SPI_LEAD zero
+ * bytes, the pin is handed to the SERCOM inside them (DO is low there), and taken back in the completion interrupt
+ * (a high blip of a few us after the last LED's data reaches nobody: every LED has its 24 bits).
+ */
+static inline void pin_to_sercom(bool on)
+{
+	PortGroup *pg = (PortGroup *)PANEL_PORT;
+
+	if (on) {
+		pg->PINCFG[PANEL_PIN].reg |= PORT_PINCFG_PMUXEN;
+	} else {
+		pg->PINCFG[PANEL_PIN].reg &= ~PORT_PINCFG_PMUXEN;
+	}
+}
+
+static void spi_cb(const struct device *dev, int result, void *ud)
+{
+	ARG_UNUSED(dev);
+	ARG_UNUSED(ud);
+	pin_to_sercom(false);
+	spi_rc = result;
+	k_sem_give(&spi_done);
+}
+
+static size_t spi_encode(const uint8_t *grb, size_t n, size_t lead)
+{
+	size_t k = 0;
+
+	for (size_t i = 0; i < lead; i++) {
+		spibuf[k++] = 0;
+	}
+	for (size_t i = 0; i < n && k < sizeof(spibuf) - 1; i++) {
+		for (uint8_t b = 0x80; b; b >>= 1) {
+			spibuf[k++] = (grb[i] & b) ? WS_ONE : WS_ZERO;
+		}
+	}
+	spibuf[k++] = 0;
+	return k;
+}
+
+/* start a frame whose first SPI_LEAD bytes are zero; the pin goes to the SERCOM 2 us in (of the lead's 19 us) */
+static int spi_start(size_t len)
+{
+	const struct spi_buf tb = {.buf = spibuf, .len = len};
+	const struct spi_buf_set ts = {.buffers = &tb, .count = 1};
+
+	k_sem_reset(&spi_done);
+	unsigned int key = irq_lock(); /* ~3 us: the hand-over must land inside the lead */
+	int r = spi_transceive_cb(pspi, &pspi_cfg, &ts, NULL, spi_cb, NULL);
+
+	if (r == 0) {
+		k_busy_wait(2);
+		pin_to_sercom(true);
+	}
+	irq_unlock(key);
+	return r;
+}
+
+static int ws2812_spi_send(const uint8_t *grb, size_t n)
+{
+	uint32_t t0 = k_cycle_get_32();
+
+	if (k_mutex_lock(&spi_lock, K_MSEC(100))) {
+		return -EBUSY;
+	}
+	int r = spi_start(spi_encode(grb, n, SPI_LEAD));
+
+	if (r == 0 && k_sem_take(&spi_done, K_MSEC(20))) {
+		r = -ETIMEDOUT;
+	}
+	if (r == 0) {
+		r = spi_rc;
+	}
+	uint32_t us = k_cyc_to_us_floor32(k_cycle_get_32() - t0);
+
+	spi_frames++;
+	spi_us_max = MAX(spi_us_max, us);
+	if (r) {
+		spi_err++;
+	}
+	k_usleep(300); /* reset / latch, without holding the CPU */
+	k_mutex_unlock(&spi_lock);
+	return r;
+}
+
+/* PA11 as a PORT output, low (both drivers rest there; spi_start() lends it to the SERCOM per frame); INEN on, so
+ * PORT IN shows the pin (`panel spitest`) */
+static void panel_pin_to(bool spi)
+{
+	PortGroup *pg = (PortGroup *)PANEL_PORT;
+
+	ARG_UNUSED(spi);
+	gpio_pin_configure_dt(&panel_pin, GPIO_OUTPUT_INACTIVE); /* PMUXEN off, DIR out, OUT 0 */
+	pg->PINCFG[PANEL_PIN].reg |= PORT_PINCFG_INEN;
+}
+
+/*
+ * `panel spitest`: send 12 known bytes through the SPI path and watch the pin from the CPU (PORT IN + cycle counter,
+ * interrupts off for ~200 us): every high time is measured and decoded back to bits. Proves the waveform without a
+ * scope or LEDs (the board on the bench may have none).
+ */
+static __ramfunc int spi_sample(uint32_t *edges, int max, uint32_t cycles)
+{
+	const volatile uint32_t *in = &((PortGroup *)PANEL_PORT)->IN.reg;
+	const uint32_t m = BIT(PANEL_PIN);
+	uint32_t last = *in & m, t0 = DWT->CYCCNT;
+	int n = 0;
+
+	while (n < max && DWT->CYCCNT - t0 < cycles) {
+		uint32_t v = *in & m;
+
+		if (v != last) {
+			edges[n++] = DWT->CYCCNT;
+			last = v;
+		}
+	}
+	return n;
+}
+
+static void spi_selftest(const struct shell *sh)
+{
+	static const uint8_t pat[12] = {0xa5, 0x0f, 0xf0, 0x55, 0x00, 0xff, 0x81, 0x7e, 0x33, 0xcc, 0x01, 0x80};
+	static uint32_t e[2 * 96 + 8];
+	PortGroup *pg = (PortGroup *)PANEL_PORT;
+	uint32_t m = BIT(PANEL_PIN);
+
+	CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+	DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+	pg->PINCFG[PANEL_PIN].reg |= PORT_PINCFG_INEN;
+	k_mutex_lock(&spi_lock, K_FOREVER); /* no panel frame meanwhile */
+	k_msleep(1);
+	int idle0 = !!(pg->IN.reg & m);
+	size_t len = spi_encode(pat, sizeof(pat), SPI_LEAD);
+	unsigned int key = irq_lock();
+	int r = spi_start(len); /* sampled from inside the lead: an edge at the hand-over would show as a bit */
+	int n = r ? 0 : spi_sample(e, ARRAY_SIZE(e), 120 * 200);
+
+	irq_unlock(key);
+	if (r == 0) {
+		k_sem_take(&spi_done, K_MSEC(20));
+	}
+	k_usleep(50);
+	int idle1 = !!(pg->IN.reg & m);
+
+	k_mutex_unlock(&spi_lock);
+	/* edges alternate rise, fall, ... starting from the idle low level */
+	uint32_t hi0_min = UINT32_MAX, hi0_max = 0, hi1_min = UINT32_MAX, hi1_max = 0, per_min = UINT32_MAX, per_max = 0;
+	int bits = 0, bad = 0;
+
+	for (int i = 0; i + 1 < n; i += 2) {
+		uint32_t hi = e[i + 1] - e[i];
+		int bit = hi > 63; /* 525 ns: halfway between 300 and 750 */
+		int want = bits < 96 ? (pat[bits / 8] >> (7 - bits % 8)) & 1 : -1;
+
+		if (bit) {
+			hi1_min = MIN(hi1_min, hi);
+			hi1_max = MAX(hi1_max, hi);
+		} else {
+			hi0_min = MIN(hi0_min, hi);
+			hi0_max = MAX(hi0_max, hi);
+		}
+		if (i + 2 < n && bits < 95) { /* rise to rise within the data (not into the trailing zero byte) */
+			uint32_t per = e[i + 2] - e[i];
+
+			per_min = MIN(per_min, per);
+			per_max = MAX(per_max, per);
+		}
+		bad += bit != want;
+		bits++;
+	}
+#define NS(c) ((c) == UINT32_MAX ? 0 : (unsigned)((c) * 25 / 3)) /* 120 MHz cycles -> ns */
+	shell_print(sh, "panel spitest: start %d, %d edges, %d bits decoded (want 96), %d wrong | 0: high %u..%u ns | "
+		    "1: high %u..%u ns | bit period %u..%u ns | idle before %d after %d (want 0 0) -> %s",
+		    r, n, bits, bad, NS(hi0_min), NS(hi0_max), NS(hi1_min), NS(hi1_max), NS(per_min), NS(per_max), idle0,
+		    idle1, (r == 0 && bits == 96 && bad == 0 && !idle0 && !idle1) ? "PASS" : "FAIL");
+#undef NS
+}
+#endif /* HAS_PANEL_SPI */
+
 /* the cycle counter must be running or the loops above never end with interrupts off */
 static bool cyccnt_runs(void)
 {
@@ -169,6 +388,28 @@ static bool cyccnt_runs(void)
 
 	k_busy_wait(2);
 	return DWT->CYCCNT != a;
+}
+
+/* one frame out by the selected driver; a driver change moves the pin first */
+static void panel_send(const uint8_t *grb, size_t n)
+{
+	if (drv_changed) {
+		drv_changed = false;
+#if HAS_PANEL_SPI
+		panel_pin_to(drv == DRV_SPI);
+#else
+		gpio_pin_configure_dt(&panel_pin, GPIO_OUTPUT_INACTIVE);
+#endif
+	}
+#if HAS_PANEL_SPI
+	if (drv == DRV_SPI) {
+		ws2812_spi_send(grb, n);
+		return;
+	}
+#endif
+	if (drv == DRV_BB && cyccnt_runs()) {
+		ws2812_send(grb, n);
+	}
 }
 #endif
 
@@ -272,16 +513,21 @@ static void panel_thread(void *a, void *b, void *c)
 	k_msleep(1500);
 	probe_inputs();
 #if HAS_PANEL
-	gpio_pin_configure_dt(&panel_pin, GPIO_OUTPUT_INACTIVE);
+	/* the pin is set up by the first panel_send() for the selected driver */
 	/* nothing on the LEDs until 10 s after boot, then one all-dark frame first: whatever the LEDs latched
 	 * before (a crash, a power cut) is cleared, and a board that dies when it drives the panel can still
 	 * be reflashed in those 10 s */
 	k_msleep(8500);
 	memset(grb, 0, sizeof(grb));
-	LOG_INF("panel: first frame (dark) ... cycle counter %s", cyccnt_runs() ? "running" : "STOPPED");
-	if (cyccnt_runs()) {
-		ws2812_send(grb, sizeof(grb));
+#if HAS_PANEL_SPI
+	if (drv == DRV_SPI && !device_is_ready(pspi)) {
+		LOG_ERR("panel: SPI (SERCOM0) not ready: bit-bang");
+		drv = DRV_BB;
 	}
+#endif
+	LOG_INF("panel: first frame (dark) via %s ... cycle counter %s", drv == DRV_SPI ? "SPI+DMA" : drv == DRV_BB ?
+		"bit-bang" : "nothing (off)", cyccnt_runs() ? "running" : "STOPPED");
+	panel_send(grb, sizeof(grb));
 	LOG_INF("panel: dark frame sent");
 #endif
 	for (uint32_t tick = 0;; tick++) {
@@ -370,7 +616,7 @@ static void panel_thread(void *a, void *b, void *c)
 		/* the picture */
 		struct zone_vehicle v;
 		bool live = zone_vehicle(&v);
-		int h = half >= 0 ? half : (zone_plca_id() & 1) ? 0 : 1;
+		int h = panel_half();
 		bool l = live && v.left && v.lit, r = live && v.right && v.lit;
 
 		/* the sweep restarts each time a lamp lights (one column per 25 ms) */
@@ -505,11 +751,11 @@ static void panel_thread(void *a, void *b, void *c)
 			}
 		}
 #if HAS_PANEL
-		if (!t1s_is_sleeping() && cyccnt_runs()) {
+		if (!t1s_is_sleeping()) {
 			if (frames < 3) {
 				LOG_INF("panel: frame %u (sum %u) ...", frames, sum);
 			}
-			ws2812_send(grb, sizeof(grb));
+			panel_send(grb, sizeof(grb));
 			if (frames < 3) {
 				LOG_INF("panel: frame %u sent", frames);
 			}
@@ -535,6 +781,26 @@ static int cmd_panel(const struct shell *sh, size_t argc, char **argv)
 	} else if (argc > 2 && !strcmp(argv[1], "mode")) {
 		lamp_mode = strcmp(argv[2], "cluster") != 0;
 		settings_save_one("panel/mode", &lamp_mode, 1);
+	} else if (argc > 2 && !strcmp(argv[1], "drv")) {
+		uint8_t d = !strcmp(argv[2], "spi") ? DRV_SPI : !strcmp(argv[2], "bb") ? DRV_BB : !strcmp(argv[2], "off") ? DRV_OFF
+			  : 0xff;
+
+		if (d == 0xff || (d == DRV_SPI && !HAS_PANEL_SPI)) {
+			shell_print(sh, "panel drv spi|bb|off%s", HAS_PANEL_SPI ? "" : " (no SPI in this build)");
+			return -EINVAL;
+		}
+		drv = d;
+		drv_changed = true;
+		settings_save_one("panel/drv", &drv, 1);
+#if HAS_PANEL_SPI
+	} else if (argc > 1 && !strcmp(argv[1], "spitest")) {
+		if (drv != DRV_SPI) {
+			shell_print(sh, "panel spitest: only with `panel drv spi`");
+			return -EINVAL;
+		}
+		spi_selftest(sh);
+		return 0;
+#endif
 	} else if (argc > 2 && !strcmp(argv[1], "pattern")) {
 		pattern = !strcmp(argv[2], "on");
 	} else if (argc > 1 && !strcmp(argv[1], "test")) {
@@ -548,15 +814,20 @@ static int cmd_panel(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "panel: %s mode, %s%s, half %s, map %u (serpentine %u mirror-x %u mirror-y %u columns %u), bright %.2f, "
 		    "%u frames | slot 3: %s stick %u/%u prox %u",
 		    lamp_mode ? "zone lamps" : "cluster", HAS_PANEL ? "10x10 on slot 2" : "none built in", pattern ? " (orientation pattern)" : "",
-		    half == 0 ? "left" : half == 1 ? "right" : "auto (PLCA id odd = left)", map_bits, map_bits & 1,
+		    half == 0 ? "left" : half == 1 ? "right" : panel_half() ? "auto: right" : "auto: left", map_bits, map_bits & 1,
 		    (map_bits >> 1) & 1, (map_bits >> 2) & 1, (map_bits >> 3) & 1, (double)bright, frames,
 		    have_stick ? "thumbstick" : have_prox ? "proximity" : "none", stick_x, stick_y, prox_raw);
 	shell_print(sh, "panel: current budget %u (sum of channel values per frame), frames scaled down %u", PANEL_BUDGET,
 		    budget_hits);
 #if HAS_PANEL
-	shell_print(sh, "panel: LED timing (from RAM, T0H %u cycles): longest late 0-bit %u cycles (limit %u), frames %u, "
-		    "resent %u", T0H, ws_late_max, LATE, ws_frames, ws_resent);
+	shell_print(sh, "panel: driver %s | bit-bang (from RAM, T0H %u cycles): longest late 0-bit %u cycles (limit %u), "
+		    "frames %u, resent %u", drv == DRV_SPI ? "SPI+DMA" : drv == DRV_BB ? "bit-bang" : "off", T0H, ws_late_max,
+		    LATE, ws_frames, ws_resent);
+#if HAS_PANEL_SPI
+	shell_print(sh, "panel: SPI+DMA frames %u, errors %u, longest frame %u us", spi_frames, spi_err, spi_us_max);
+#endif
 #endif
 	return 0;
 }
-SHELL_CMD_REGISTER(panel, NULL, "panel [mode lamps|cluster|map <bits>|bright <0.02..0.3>|half left|right|auto|pattern on|off|test]", cmd_panel);
+SHELL_CMD_REGISTER(panel, NULL, "panel [mode lamps|cluster|map <bits>|bright <0.02..0.3>|half left|right|auto|pattern on|off|test|"
+		   "drv spi|bb|off|spitest]", cmd_panel);

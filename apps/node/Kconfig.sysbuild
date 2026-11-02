@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+# Sysbuild options of this app: the MCUboot signing key from the environment, never from the repository.
+#
+#   T1S_SIGNING_KEY=~/.config/t1s-keys/mcuboot-rsa-2048.pem west build --sysbuild ...   (tools/build_node.sh sets it)
+#
+# Unset = MCUboot's public development key (root-rsa-2048.pem): what nodes 3 and 4 still carry in their bootloader,
+# so their OTA images must keep being signed with it until their MCUboot is reflashed over SWD (README).
+# The key's public half is built into MCUboot: changing it means flashing MCUboot again, which OTA cannot do.
+
+config BOOT_SIGNATURE_KEY_FILE
+	string
+	default "$(T1S_SIGNING_KEY)" if "$(T1S_SIGNING_KEY)" != ""
+
+source "share/sysbuild/Kconfig"

@@ -40,6 +40,7 @@ static volatile uint8_t v_accel, v_brake_pedal, v_mode, v_high, v_mrm;
 static volatile int v_view = -1;
 static volatile int64_t last_live;
 static uint32_t n_keys;
+uint32_t zone_vss_keys(void) { return n_keys; }
 volatile int zone_lamp_led = -1; /* LED0 override from the lamps: -1 none, 0/1 */
 
 static bool lit_now(void)

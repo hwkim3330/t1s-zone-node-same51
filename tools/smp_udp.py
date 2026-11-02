@@ -8,7 +8,11 @@
 `update` = upload into slot 1, mark it for a test boot, reset. MCUboot swaps it in; the app confirms
 `upload` = only the first step (slot 1, no test boot, no reset): also a load test of the node.
 itself once its network driver is up, otherwise the next reset swaps the old image back.
-Several hosts at once: `update` takes a comma-separated list. Needs cbor2 (already used by imgtool)."""
+Several hosts at once: `update` takes a comma-separated list. Needs cbor2 (already used by imgtool).
+
+Firmware >= 0.14 takes SMP only from 192.168.100.51 and only while armed (`ota arm`, zone_guard.c): this tool arms
+each node first over Zenoh with an authenticated bus command (tools/bus_auth.py, key ~/.config/t1s-keys/bus.key).
+Nodes whose heartbeat has no "ota" field (older firmware) are not armed (they take SMP from anyone)."""
 import hashlib
 import socket
 import struct
@@ -16,6 +20,8 @@ import sys
 import time
 
 import cbor2
+
+import bus_auth
 
 PORT, CHUNK = 1337, 384      # node's SMP netbuf is 1024 B; keep the CBOR frame well inside it
 seq = 0
@@ -37,6 +43,41 @@ def smp(sock, host, op, group, cmd, body, timeout=3.0, tries=4):
         except socket.timeout:
             continue
     raise TimeoutError(f'{host}: no SMP reply (group {group} cmd {cmd})')
+
+
+_zs = [None]
+
+
+def arm(host, seconds=600, wait=3):
+    """open the node's SMP window (firmware >= 0.14); quietly nothing for older firmware or without zenoh"""
+    import json
+    try:
+        if _zs[0] is None:
+            _zs[0] = bus_auth.open_session()
+    except Exception as e:          # no zenoh module / router: SMP may still work on an older node
+        print(f'{host}: not armed ({e})')
+        return
+    hbs = {}
+
+    def on_hb(m):
+        try:
+            h = json.loads(m.payload.to_string())
+        except ValueError:
+            return
+        if h.get('ip'):
+            hbs[h['ip']] = h
+    sub = _zs[0].declare_subscriber('ecu/*/status', on_hb)
+    t0 = time.time()
+    while host not in hbs and time.time() - t0 < wait:
+        time.sleep(0.05)
+    sub.undeclare()
+    hb = hbs.get(host)
+    if hb is None or 'ota' not in hb:
+        return                      # no heartbeat / older firmware: no arming
+    if hb['ota'] < 0 or hb['ota'] > 60:
+        return                      # always open, or open long enough
+    r = bus_auth.run(_zs[0], hb['id'], f'ota arm {seconds}')
+    print(f'{host}: ota arm -> {(r or "(no answer)").strip().splitlines()[-1] if r else "(no answer)"}')
 
 
 def state(sock, host):
@@ -85,6 +126,7 @@ def main():
     hosts, what = sys.argv[1].split(','), sys.argv[2]
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     for h in hosts:
+        arm(h)
         if what == 'list':
             show(sock, h)
         elif what == 'reset':
@@ -97,6 +139,7 @@ def main():
         time.sleep(15)       # MCUboot swap (~2 x 176 KB of 8 KiB erases) + boot + T1S up
         for h in hosts:
             try:
+                arm(h, wait=30)     # the new image boots closed
                 show(sock, h)
             except TimeoutError as e:
                 print(e)

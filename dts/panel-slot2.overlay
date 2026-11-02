@@ -1,10 +1,53 @@
 /*
  * MIKROE-4115 10x10 RGB Click in mikroBUS slot 2: 100 WS2812-type LEDs, DI on the slot's PWM pin
- * (PA11). Bit-banged from the cycle counter (src/zone_panel.c); powered from the base's 5 V, the
- * firmware caps the brightness. The LED order on the board is set with `panel map` (saved).
+ * (PA11). Powered from the base's 5 V, the firmware caps the brightness. The LED order on the
+ * board is set with `panel map` (saved).
+ *
+ * Two ways to drive DI (src/zone_panel.c, `panel drv spi|bb`, saved):
+ *   spi (default)  PA11 = SERCOM0 PAD3 (peripheral C) as SPI data out, DOPO 2 (DO = PAD3, SCK = PAD1 = PA09,
+ *                  not routed: the clock is not needed on a pin). One SPI byte per LED bit at 6.67 MHz
+ *                  (0xC0 = 300 ns high, 0xF8 = 750 ns, 1.2 us per bit), fed by the DMAC: interrupts stay on.
+ *   bb             the cycle-counter bit-bang on the same pin as a GPIO (interrupts off ~3 ms per frame).
+ * SERCOM0 is otherwise slot 2's UART (PA08/PA09), which the panel click does not use.
  */
 / {
 	zephyr,user {
 		panel-gpios = <&mikrobus_2 6 GPIO_ACTIVE_HIGH>;
+		panel-spi = <&sercom0>;
 	};
+};
+
+&pinctrl {
+	sercom0_ws2812: sercom0_ws2812 {
+		group1 {
+			pinmux = <PA11C_SERCOM0_PAD3>;
+		};
+	};
+};
+
+&sercom0 {
+	status = "okay";
+	compatible = "atmel,sam0-spi";
+	/delete-property/ current-speed;
+	/delete-property/ rxpo;
+	/delete-property/ txpo;
+	dipo = <0>;
+	dopo = <2>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-0 = <&sercom0_ws2812>;
+	pinctrl-names = "default";
+	/* DMAC channel, trigger source: SERCOM0 TX = 0x05, RX = 0x04 (SAM D5x/E5x DMAC TRIGSRC) */
+	dmas = <&dmac 0 0x05>, <&dmac 1 0x04>;
+	dma-names = "tx", "rx";
+};
+
+/*
+ * spi_sam0 with CONFIG_SPI_ASYNC takes a DMA controller for every SPI instance (DEVICE_DT_GET of the "tx" dma,
+ * unconditionally, Zephyr 3.7): the shared mikroBUS SPI (SERCOM1, LAN8651 + thumbstick) needs channels as well.
+ * Its users call the synchronous API, which never touches them.
+ */
+&mikrobus_spi {
+	dmas = <&dmac 2 0x07>, <&dmac 3 0x06>;
+	dma-names = "tx", "rx";
 };

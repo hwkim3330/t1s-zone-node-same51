@@ -290,7 +290,7 @@ async function zoneTick() {
     const c = zoneCard(n), h = n.hello || {};
     const live = n.hello_age < 5;
     c.querySelector('.dot').style.background = !live ? 'var(--bad)' : h.ptp_ns == null ? 'var(--warn)' : 'var(--ok)';
-    c.querySelector('.t').textContent = `${h.role ?? "존 노드"} (sam${n.id}) · ${h.ip ?? "?"} · 가동 ${h.up ?? "?"} s${h.fw ? " · fw " + h.fw : ""}${h.api ? " · API " + h.api : " · 옛 키"}`;
+    c.querySelector('.t').textContent = `${h.role ?? "존 노드"} (sam${n.id}) · ${h.ip ?? "?"} · 가동 ${h.up ?? "?"} s${h.fw ? " · fw " + h.fw : ""}${h.conf === 0 ? " (시험 부팅, 미확정)" : ""}${h.api ? " · API " + h.api : " · 옛 키"}${h.conflict != null ? " · 역할 충돌: sam" + h.conflict + " 도 " + h.role : ""}${h.auth === 2 ? " · 인증 셸" : ""}`;
     drawPanel(c.querySelector('canvas'), n.panel);
     spark(c.querySelector('.spark'), n.ptp_hist);
     c.querySelector('.ptpv').textContent = h.ptp_ns == null ? '잠금 안 됨' : `지금 ${h.ptp_ns} ns · σ ${n.ptp_sd ?? '—'} ns (최근 2 분)`;

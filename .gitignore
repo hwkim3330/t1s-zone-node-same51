@@ -1,2 +1,8 @@
 build/
 __pycache__/
+# keys never go into this public repository (they live in ~/.config/t1s-keys/, tools/build_node.sh)
+*.pem
+*.key
+*.der
+t1s-keys/
+bus_key.h

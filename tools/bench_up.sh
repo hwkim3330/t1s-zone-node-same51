@@ -23,7 +23,9 @@ pidfile_alive() { [ -f "$L/$1.pid" ] && kill -0 "$(cat "$L/$1.pid")" 2>/dev/null
 
 stop() {
 	for n in zone_to_hmi zonelink console zenohd; do
-		if pidfile_alive $n; then kill "$(cat "$L/$n.pid")" && echo "stopped $n"; fi
+		# the restart loops' python first: killing only the bash loop left it running, and each later bench_up started
+		# another -- four zone_to_hmi.py were found sending the same stick to the HMI (2026-11-03)
+		if pidfile_alive $n; then pkill -P "$(cat "$L/$n.pid")" 2>/dev/null; kill "$(cat "$L/$n.pid")" && echo "stopped $n"; fi
 		rm -f "$L/$n.pid"
 	done
 }

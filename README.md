@@ -10,6 +10,10 @@
 
 데모 차량의 front / rear / interior / drive 존 노드 4개가 모두 이 조합이다.
 
+> **2026-11-02 하드닝(브랜치 `hardening`, v0.14)**: 버스 셸 HMAC 인증·허용 목록, SMP/UDP 출발지·arming 필터, 저장소 밖 서명 키,
+> 건강 검사 뒤 OTA 확정(안 되면 자동 복귀), 보드별 역할(5 = zone-rear), WS2812 SPI+DMA, West 매니페스트.
+> 무엇을 왜 바꿨고 무엇을 쟀는지는 [`docs/2026-11-02_HARDENING.md`](docs/2026-11-02_HARDENING.md).
+
 ## 상태 (2026-10-27, 벤치 1대)
 
 | 단계 | 결과 |
@@ -109,12 +113,38 @@ picocom -b 115200 /dev/ttyACM0      # 또는 screen / minicom
 
 `west flash` 는 `boards/microchip/same51_cnano/support/openocd.cfg` (cmsis-dap + atsame5x) 를 쓴다. 목표 전압 확인: `pymcuprog getvoltage`.
 
+### 키와 빌드 스크립트 (v0.14~)
+
+키 두 개는 **저장소 밖**(`~/.config/t1s-keys/`, 공개 저장소라 절대 커밋하지 않는다; `.gitignore` 에 `*.pem *.key`):
+`tools/keys.sh` 가 한 번 만든다 — `mcuboot-rsa-2048.pem`(MCUboot 서명 키), `bus.key`(버스 셸 HMAC 키, 64 hex). 둘 다 따로 백업할 것.
+
+```bash
+tools/build_node.sh build/node 0.14.3+0                       # MCUboot + 앱(sysbuild), 프로젝트 키로 서명
+T1S_SIGNING_KEY=dev tools/build_node.sh build/node-dev 0.14.3+0  # MCUboot 개발 키로 서명: 지금 3·4·5번용(네트워크 펌웨어 업데이트 절)
+tools/build_node.sh build/node-rel 0.14.3+0 -Dnode_EXTRA_CONF_FILE=release.conf   # 버스 셸·SMP 없는 릴리스
+```
+`T1S_SIGNING_KEY`(PEM 경로, `apps/node/Kconfig.sysbuild` 가 읽음) · `T1S_BUS_KEY_FILE` 로 바꿀 수 있다. 버스 키 없이 빌드하면 그 이미지는 버스 셸 명령을 전부 거부한다.
+
+### 다른 PC 에서 빌드 (West)
+
+`west.yml` 이 Zephyr(v3.7-branch f5e05c84)·zenoh-pico(1.10.1, e1ab223a)·zcbor 를 이 벤치와 같은 커밋으로 고정한다:
+```bash
+west init -m https://github.com/hwkim3330/t1s-zone-node-same51 --mr master t1s-ws && cd t1s-ws && west update
+git -C zephyr apply ../t1s-zone-node-same51/zephyr-patches/0001-lan865x-frame-timestamps.patch
+ZEPHYR_WS=$PWD t1s-zone-node-same51/tools/build_node.sh $PWD/build/node 0.14.3+0
+```
+(저장소가 Zephyr 모듈이라 보드를 따로 알려 줄 필요가 없다. 이 PC 의 옛 `~/zephyrproject` 는 `ZENOH_PICO_DIR` 로 예전처럼 빌드된다.)
+
 ### 셸 명령
 
 | 명령 | 하는 일 |
 |---|---|
 | `t1s status` | PLCA(EN, id, count, TO, burst, **PST**), PHY BMSR, OA STATUS0, IP 카운터 |
 | `t1s plca <id> [count] [to]` | PLCA 재설정 (칩 리셋 포함). `t1s plca csma` = PLCA 끔. **저장 안 됨** — 재부팅하면 Kconfig 값 |
+| `zone`, `zone role <name>\|auto` | 이 ECU 의 역할(`ecu/<role>/…`, 저장) · 이미지 확정 상태 |
+| `ota`, `ota arm [s]`, `ota close`, `ota src <ip>\|any` | SMP/UDP 업데이트 창(v0.14: 닫혀 있다가 arm 된 동안만, 출발지 .51 만) |
+| `irqlat [reset]` | TC4 로 잰 인터럽트 지연(평균·최대·분포) |
+| `panel drv spi\|bb\|off`, `panel spitest` | WS2812 구동(SPI+DMA / 비트뱅, 저장) · SPI 파형 자가검증 |
 | `net iface`, `net ping <ip>`, `net arp` | Zephyr 기본 네트워크 셸 |
 
 LED0: 켜짐 고정 = PLCA 비컨 수신(버스 동작), 1 Hz 깜빡임 = 코디네이터 대기.
@@ -155,7 +185,8 @@ x = 0 이 바깥쪽(왼쪽 존), 오른쪽 존은 좌우 반전.
 | 2 | **MIKROE-4115 10×10 RGB** (WS2812, DI = PWM 핀 PA11) | ESP 존 컨트롤러와 같은 20×10 차 그림(`zone_render.h`, elite-t1s-hat 에서 가져옴)의 **이 존 몫 절반**: 기어·속도·지시등 스윕·브레이크/후진 줄·페달·핸들·근접 막대. 두 노드가 합쳐 한 그림 |
 | 3 | Thumbstick (MCP3204, 공유 SPI CS=PB04) **또는** Proximity (VCNL4200, 공유 I2C 0x51) | 부팅 때 어느 쪽인지 자동 감지, 20 Hz 로 `vehicle/private/zone/stick/x|y`, `.../proximity/raw`, `vehicle/private/external/proximity_rear`(m) 발행 — ESP 존 컨트롤러와 같은 키 |
 
-WS2812 는 사이클 카운터로 비트뱅(프레임당 인터럽트 정지 3 ms). 밝기 상한 `panel bright`(기본 0.12, 최대 0.3 — 흰색 100 개 전부면 ~6 A).
+WS2812 는 **v0.14 부터 SERCOM0 PAD3(PA11) SPI + DMA**(LED 비트 = SPI 바이트, 6.67 MHz, 인터럽트 안 막음; 측정: IRQ 지연 최대 3.21 ms → 30 µs).
+예전 비트뱅(프레임당 인터럽트 정지 3 ms)은 `panel drv bb` 로 남아 있다. 밝기 상한 `panel bright`(기본 0.12, 최대 0.3 — 흰색 100 개 전부면 ~6 A).
 LED 배선 순서는 문서가 없어 `panel test`(0→99 번을 하나씩 켬)로 보고 `panel map <bits>`(1 지그재그, 2 좌우, 4 상하, 8 열 우선)로 맞춘다(저장).
 어느 절반: `panel half left|right|auto`(auto = PLCA id 홀수 왼쪽). 슬롯 3 의 GPIO 램프 출력은 이제 기본 꺼짐(`LAMP_SLOT=0`) — 입력 클릭의 핀과 겹친다.
 빌드 옵션 `-Dnode_PANEL_SLOT=` / `-Dnode_SENSOR_SLOT=`(0 = 없음).
@@ -225,14 +256,20 @@ tools/smp_udp.py 192.168.100.73,192.168.100.74 update build/node-v2/node/zephyr/
 tools/smp_udp.py 192.168.100.73 list
 ```
 
-실측(2026-10-27, PC → ESP 브리지 → T1S): 176 KB 3.3 s(≈430–600 kbit/s), 스왑+부팅 포함 ≈17 s. 앱은 네트워크 드라이버가 올라온 뒤
-스스로 이미지를 확정한다 → 부팅 못 하는 이미지는 다음 리셋에 MCUboot 가 되돌린다. 서명 키는 MCUboot 개발 키(벤치용).
+실측(2026-10-27, PC → ESP 브리지 → T1S): 176 KB 3.3 s(≈430–600 kbit/s), 스왑+부팅 포함 ≈17 s.
+**v0.14 확정 규칙**: test 부팅한 이미지는 건강 검사(PLCA 비컨, Zenoh + 첫 하트비트, 필터를 통과한 SMP 요청 하나 = 다시 업데이트할 수 있음)를
+통과해야 확정하고, 180 s 안에 못 하면 미확정으로 재부팅 → MCUboot 가 이전 이미지로(실측 202.8 s). 워치독은 POST_KERNEL 에서 켜져 부팅 중 멈춘 이미지도 리셋한다(0.14.3~).
+**v0.14 SMP 보호**: UDP 1337 은 192.168.100.51 에서, `ota arm` 된 동안만 받는다 — `smp_udp.py` 가 노드마다 인증 셸로 먼저 arm 한다(`~/.config/t1s-keys/bus.key` 필요).
+**서명 키**: 지금 3·4·5번 MCUboot 는 모두 **개발 키**(공개 키, 벤치용) — 이 보드들의 OTA 이미지는 `T1S_SIGNING_KEY=dev` 로 만든다.
+프로젝트 키 MCUboot 로 바꾸는 건 SWD 로만 된다(절차: `docs/2026-11-02_HARDENING.md` 1절). 개발 키 MCUboot 는 프로젝트 키 이미지를 거부한다(실측).
 파티션: boot 64K · slot0/slot1 472K · storage 16K (`same51_cnano.dts`). 버전을 안 올리면 같은 해시라 스왑이 안 일어난다.
 
 **2026-10-29 v0.13.10: 노드 콘솔을 버스 너머로** — `ecu/<role>/cmd` 에 `sh <명령>` 을 넣으면 노드가 더미 셸 백엔드로 실행하고 출력을
 `ecu/<role>/cmd/ack` 에 `sh:<출력>` 으로 돌려준다(응답 ~50 ms, 출력 최대 1 KB, 한 번에 하나). 콘솔의 노드 버튼(LED 배치·슬립·진단)이 이 길을 쓴다
 (`POST /api/zone/sh {id, cmd}`) — USB 케이블 불필요. 단 **깨우기는 예외**: 잠든 노드는 버스로 명령을 못 받는다(USB 또는 버스 웨이크업).
 보안 없음, 벤치 전용. 3·4번에 OTA 로 올림.
+**v0.14**: 인증 필수 — `ash <ctr> <tag> <명령>`(HMAC-SHA256, 부팅 nonce·id·카운터에 묶임), 허용 목록(`APP_BUS_SHELL_ALLOW`: 레지스터 쓰기·신원·라우터 변경 없음),
+`ecu/all` 로는 안 됨, `release.conf` 는 셸 자체를 뺀다. PC 쪽 `tools/bus_auth.py <id> <명령>`; 콘솔은 `t1s/sam<id>/cmd` 로 id 지정(역할이 겹쳐도 됨).
 
 **2026-10-29 세 번째 보드(…486, MAC FC:C2:3D:3A:0C:D2) = id 5 / 192.168.100.75**: USB 로 MCUboot+v0.13.9 를 굽고 MAC 표로 신원 확인
 (클릭은 슬롯 1, 아직 버스 미연결). 같은 v0.13.9 를 3·4번에 `smp_udp.py 192.168.100.73,192.168.100.74 update` 로 올림: 293 KB 5.8 s/대
@@ -245,7 +282,7 @@ tools/smp_udp.py 192.168.100.73 list
 
 | 키 | 방향 | 내용 |
 |---|---|---|
-| `t1s/sam<id>/hello` | 노드→ | 1 Hz `{"id":3,"ip":"192.168.100.73","up":24,"pst":1,"cmds":2}` |
+| `t1s/sam<id>/hello` | 노드→ | 1 Hz `{"id":3,"ip":"192.168.100.73","up":24,"pst":1,"cmds":2}` (v0.14 의 `ecu/<role>/status` 는 + `conf` 확정, `bn` 부팅 nonce, `auth` 0/1/2, `kid` 버스 키 지문, `ota` arm 남은 초, 역할 충돌 시 `conflict`) |
 | `t1s/sam<id>/cmd`, `t1s/all/cmd` | →노드 | `led on/off/blink/auto`, `ping` |
 | `t1s/sam<id>/ack` | 노드→ | 처리한 명령 / `pong` |
 
@@ -322,7 +359,8 @@ DT 자리표시 MAC → 같은 클록 ID). 혼자일 땐 Pdelay 응답이 없어
 ## 노드 정체성 (ID/IP)
 
 부팅 시 순서: **저장값**(`t1s save`) → **MAC 표**(`main.c` 의 `bench[]`, 클릭 EEPROM 의 EUI-48) → Kconfig. 그래서 모든 보드가 같은
-이미지를 쓴다. 셸: `t1s plca <id> [count]`, `t1s ip <a.b.c.d>`, `t1s save`, `t1s forget`. 비컨이 돌아오면(PST 0→1) PLCA 를 자동 재적용한다
+이미지를 쓴다. **역할**(`ecu/<role>/…`)도 v0.14 부터 MAC 표에 보드별로 적는다: 3 = zone-left, 4 = zone-right, 5 = zone-rear(예전엔 PLCA id 홀짝이라
+3·5 가 둘 다 zone-left 로 충돌). `zone role <name>` 으로 바꾸고 저장(`auto` = MAC 표로), 남과 겹치면 하트비트 `conflict` 와 로그. 셸: `t1s plca <id> [count]`, `t1s ip <a.b.c.d>`, `t1s save`, `t1s forget`. 비컨이 돌아오면(PST 0→1) PLCA 를 자동 재적용한다
 (아래 송신 멈춤 함정의 수정).
 
 ## ESP + 2노드 버스 (2026-10-27)

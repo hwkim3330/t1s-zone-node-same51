@@ -27,8 +27,13 @@ manifest:
           - mcuboot
           - mbedtls
           - tinycrypt
-          - zcbor
           - picolibc
+    # the bench PC's checkout is zcbor 0.9.1+2, not the 0.8.99 commit Zephyr f5e05c84's manifest names: pinned to
+    # what the deployed images were built with (mcumgr's CBOR)
+    - name: zcbor
+      remote: zephyrproject-rtos
+      revision: 9164bd18dcd88ff9d9ef98279501fc1093571017
+      path: modules/lib/zcbor
     - name: zenoh-pico
       remote: eclipse-zenoh
       revision: e1ab223a28aaebb5dec1e70d98eab152332f777a   # tag 1.10.1

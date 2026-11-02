@@ -1,0 +1,6 @@
+# This repository as a Zephyr module: in a workspace made from west.yml the board (boards/microchip/same51_cnano)
+# is found without -DBOARD_ROOT, also by sysbuild's MCUboot image.
+name: t1s-zone-node-same51
+build:
+  settings:
+    board_root: .

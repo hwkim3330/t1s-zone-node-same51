@@ -1,0 +1,37 @@
+# West manifest: a workspace that builds this firmware on any PC (README "다른 PC 에서 빌드").
+#
+#   west init -m https://github.com/hwkim3330/t1s-zone-node-same51 --mr master t1s-ws
+#   cd t1s-ws && west update
+#   git -C zephyr apply ../t1s-zone-node-same51/zephyr-patches/0001-lan865x-frame-timestamps.patch
+#
+# Pinned to what the bench PC builds with (2026-11-02): Zephyr v3.7-branch f5e05c84 (VERSION 3.7.3-rc1) and
+# zenoh-pico 1.10.1 (tag commit e1ab223a). The ESP T1S HAT firmware vendors the same release
+# (esp32-t1s-bridge/vendor/zenoh-pico) with #if guards around the raw-Ethernet transport for ESP-IDF; the Zephyr
+# build does not need them (built and run unpatched, 2026-11-02).
+manifest:
+  version: "0.13"
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+    - name: eclipse-zenoh
+      url-base: https://github.com/eclipse-zenoh
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      revision: f5e05c841481a6510573c43185dc54d81d24a3d2
+      import:
+        # only what this board and MCUboot use: a full Zephyr workspace is ~4 GB
+        name-allowlist:
+          - cmsis
+          - hal_atmel
+          - mcuboot
+          - mbedtls
+          - tinycrypt
+          - zcbor
+          - picolibc
+    - name: zenoh-pico
+      remote: eclipse-zenoh
+      revision: e1ab223a28aaebb5dec1e70d98eab152332f777a   # tag 1.10.1
+      path: modules/lib/zenoh-pico
+  self:
+    path: t1s-zone-node-same51

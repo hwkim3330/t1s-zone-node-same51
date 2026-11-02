@@ -33,9 +33,24 @@ set(T1S_SLOT 1 CACHE STRING "mikroBUS slot (1-3) of the MIKROE-5543 click")
 list(APPEND EXTRA_DTC_OVERLAY_FILE
      ${CMAKE_CURRENT_LIST_DIR}/../../dts/two-wire-eth-click-slot${T1S_SLOT}.overlay)
 
-# zenoh-pico 1.10.1 as a Zephyr module (same tree the ESP T1S HAT firmware vendors).
-set(ZENOH_PICO_DIR $ENV{HOME}/esp32-t1s-bridge/vendor/zenoh-pico CACHE PATH "zenoh-pico source")
-list(APPEND ZEPHYR_EXTRA_MODULES ${ZENOH_PICO_DIR})
+# zenoh-pico 1.10.1 as a Zephyr module. In a workspace made from this repo's west.yml it is a west project
+# (modules/lib/zenoh-pico) and Zephyr finds it by itself. Otherwise (the bench PC's older ~/zephyrproject,
+# whose manifest is Zephyr's own) it is added from ZENOH_PICO_DIR: -DZENOH_PICO_DIR=... or the tree the ESP
+# T1S HAT firmware vendors. Both are 1.10.1 + zenoh-pico-patches/.
+if(NOT ZEPHYR_BASE AND DEFINED ENV{ZEPHYR_BASE})
+  set(_zbase $ENV{ZEPHYR_BASE})
+else()
+  set(_zbase ${ZEPHYR_BASE})
+endif()
+if(EXISTS ${_zbase}/../modules/lib/zenoh-pico/zephyr/module.yml AND NOT ZENOH_PICO_DIR)
+  message(STATUS "zenoh-pico: west project ${_zbase}/../modules/lib/zenoh-pico")
+else()
+  set(ZENOH_PICO_DIR $ENV{HOME}/esp32-t1s-bridge/vendor/zenoh-pico CACHE PATH "zenoh-pico source")
+  if(NOT EXISTS ${ZENOH_PICO_DIR}/zephyr/module.yml)
+    message(FATAL_ERROR "zenoh-pico not found: build in a workspace made from west.yml (README), or -DZENOH_PICO_DIR=")
+  endif()
+  list(APPEND ZEPHYR_EXTRA_MODULES ${ZENOH_PICO_DIR})
+endif()
 
 # Zone lamp outputs (left/right/brake/reverse) on a free mikroBUS slot; 0 = none
 set(LAMP_SLOT 0 CACHE STRING "mikroBUS slot for plain GPIO lamp outputs (0 = none; the 10x10 panel shows the lamps)")

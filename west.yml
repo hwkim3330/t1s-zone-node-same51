@@ -7,7 +7,8 @@
 # Pinned to what the bench PC builds with (2026-11-02): Zephyr v3.7-branch f5e05c84 (VERSION 3.7.3-rc1) and
 # zenoh-pico 1.10.1 (tag commit e1ab223a). The ESP T1S HAT firmware vendors the same release
 # (esp32-t1s-bridge/vendor/zenoh-pico) with #if guards around the raw-Ethernet transport for ESP-IDF; the Zephyr
-# build does not need them (built and run unpatched, 2026-11-02).
+# build does not need them (a fresh workspace from this manifest built unpatched, 2026-11-02; the bench images so far
+# come from ~/zephyrproject + the vendored tree).
 manifest:
   version: "0.13"
   remotes:

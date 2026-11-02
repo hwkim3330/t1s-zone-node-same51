@@ -623,6 +623,29 @@ static int cmd_zone(const struct shell *sh, size_t argc, char **argv)
 }
 SHELL_CMD_REGISTER(zone, NULL, "zone [role <name>|auto]: this ECU's role on the Vehicle API (saved)", cmd_zone);
 
+/*
+ * Hardware watchdog: 8 s without a pass of main's loop (SPI or the stack wedged) = reset. Armed at POST_KERNEL, before
+ * any APPLICATION-level init and before main(): an image that hangs or starves the CPU on its way up (2026-11-02: the
+ * experimental IEEE 1588 stack, a cooperative thread started at APPLICATION 96, took a node off the bus for good with
+ * the watchdog only armed in main) is reset, and MCUboot then swaps a test image back out.
+ */
+static const struct device *const wdt = DEVICE_DT_GET_OR_NULL(DT_ALIAS(watchdog0));
+static int wdt_ch = -ENODEV, wdt_ret;
+
+static int wdt_early(void)
+{
+	if (wdt && device_is_ready(wdt)) {
+		struct wdt_timeout_cfg wc = {.window = {.min = 0, .max = 8000}, .flags = WDT_FLAG_RESET_SOC};
+
+		wdt_ch = wdt_install_timeout(wdt, &wc);
+		if (wdt_ch >= 0 && (wdt_ret = wdt_setup(wdt, 0)) < 0) { /* sam0: no pause-in-debug */
+			wdt_ch = -1;
+		}
+	}
+	return 0;
+}
+SYS_INIT(wdt_early, POST_KERNEL, 99);
+
 /* RSTC.RCAUSE (SAM D5x/E5x, 0x40000C00): why the chip last reset, for the boot log and the heartbeat */
 uint8_t zone_reset_cause;
 
@@ -676,19 +699,10 @@ int main(void)
 		plca_cfg.t1s_param.plca.node_count, ret);
 	k_msleep(100);
 
-	/* Hardware watchdog: 8 s without a pass of this loop (SPI or the stack wedged) = reset */
-	const struct device *wdt = DEVICE_DT_GET_OR_NULL(DT_ALIAS(watchdog0));
-	int wdt_ch = -ENODEV, wdt_ret = 0;
-
-	if (wdt && device_is_ready(wdt)) {
-		struct wdt_timeout_cfg wc = {.window = {.min = 0, .max = 8000}, .flags = WDT_FLAG_RESET_SOC};
-
-		wdt_ch = wdt_install_timeout(wdt, &wc);
-		if (wdt_ch >= 0 && (wdt_ret = wdt_setup(wdt, 0)) < 0) { /* sam0: no pause-in-debug */
-			wdt_ch = -1;
-		}
+	LOG_INF("watchdog %s (%d/%d)", wdt_ch >= 0 ? "on (8 s, since POST_KERNEL)" : "NOT available", wdt_ch, wdt_ret);
+	if (wdt_ch >= 0) {
+		wdt_feed(wdt, wdt_ch);
 	}
-	LOG_INF("watchdog %s (%d/%d)", wdt_ch >= 0 ? "on (8 s)" : "NOT available", wdt_ch, wdt_ret);
 
 	int64_t next = 0;
 	bool was_pst = true; /* so a node that boots with no coordinator counts as "lost" */

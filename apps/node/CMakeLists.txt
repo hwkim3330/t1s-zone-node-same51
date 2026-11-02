@@ -131,6 +131,10 @@ endif()
 if(CONFIG_APP_SMP_FILTER OR CONFIG_APP_IRQ_PROBE)
   target_sources(app PRIVATE src/zone_guard.c)
 endif()
+if(CONFIG_PTP)
+  # ptp.c moves the experimental IEEE 1588 stack (ptp1588.conf) to domain 77 through its private header
+  target_include_directories(app PRIVATE ${ZEPHYR_BASE})
+endif()
 # t1s_diag.c reads PLCA status through the in-tree driver's OA TC6 helpers
 target_include_directories(app PRIVATE
   ${ZEPHYR_BASE}/drivers/ethernet

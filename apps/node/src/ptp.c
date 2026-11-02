@@ -403,3 +403,18 @@ static int cmd_ptp(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 SHELL_CMD_REGISTER(ptp, NULL, "ptp [on|off] | ptp lock <ip> [sec] [kp] [ki] | ptp stop", cmd_ptp);
+
+#ifdef CONFIG_PTP
+/*
+ * Experiment (ptp1588.conf): Zephyr 3.7's IEEE 1588 stack has no Kconfig for the domain and announces in domain 0,
+ * which any PTP slave on the bench LAN (behind the ESP bridge) would follow. Moved to domain 77 before the first
+ * Announce (the stack reads the default data set at every send).
+ */
+#include <subsys/net/lib/ptp/clock.h>
+static int ptp1588_domain(void)
+{
+	((struct ptp_default_ds *)ptp_clock_default_ds())->domain = 77;
+	return 0;
+}
+SYS_INIT(ptp1588_domain, APPLICATION, 50);
+#endif

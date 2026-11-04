@@ -226,8 +226,11 @@ def bus():
         out.append({'kind': 'sam', 'name': h.get('role') or f"sam{n['id']}", 'id': n['id'], 'plca_id': n['id'], 'ip': ip,
                     'alive': n['hello_age'] < 5, 'hb_age': n['hello_age'], 'pst': h.get('pst'), 'ptp_ns': h.get('ptp_ns'),
                     'api': h.get('api'), 'fw': h.get('fw'), 'wire': w, 'mac': w and w['mac'], 'usb': usb.get(ip)})
+    macs = {o['mac'] for o in out if o.get('mac')}
     for ip, w in seen.items():          # talking on the wire without a heartbeat (old firmware, no Zenoh yet)
-        if ip not in ips and ip != GATEWAY and ip not in NOT_NODES:
+        # not an old address of a board that has a heartbeat now (a new click boots as .71 until it gets its id),
+        # not silent for 2 min (a board taken off the bus)
+        if ip not in ips and ip != GATEWAY and ip not in NOT_NODES and w['mac'] not in macs and w['age'] < 120:
             out.append({'kind': 'sam', 'name': packets.name(ip), 'plca_id': None, 'ip': ip, 'alive': w['age'] < 15,
                         'wire': w, 'mac': w['mac'], 'usb': usb.get(ip), 'no_hb': True})
     return {'nodes': out, 'capture': packets.status, 'usb_only': [b.name for b in boards if b.kind == 'sam' and b.st.get('ip') not in ips]}
